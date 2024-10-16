@@ -50,14 +50,14 @@ class MegaPiController:
         self.setFourMotors(0, 0, 0, 0)
 
 class OpenLoopController:
-    def __init__(self, mpi_ctrl, wheel_radius=0.025):
+    def __init__(self, mpi_ctrl, wheel_radius=0.006):
         """
         Initialize the OpenLoopController with the MegaPi controller and kinematic parameters.
         """
         self.mpi_ctrl = mpi_ctrl  # MegaPiController instance
         self.wheel_radius = wheel_radius
-        self.lx = wheel_radius * 2
-        self.ly = wheel_radius * 2
+        self.lx = 6.4 * wheel_radius
+        self.ly = self.lx
         self.K = self._calculate_kinematic_matrix()
         
         self.x = 0
@@ -85,7 +85,7 @@ class OpenLoopController:
         ly = self.ly
 
         # Adjusting the matrix to align with direct kinematics
-        return (4 / r) * np.array([
+        return (1 / r) * np.array([
             [1, -1, -(lx + ly)],  # ω1
             [1, 1, (lx + ly)],    # ω2
             [1, 1, -(lx + ly)],   # ω3
@@ -96,7 +96,7 @@ class OpenLoopController:
         """
         Compute individual wheel velocities using the kinematic model.
         """
-        V = np.array([vx, vy, wz]).reshape(3, 1)  # Ensure V is a 3x1 column vector
+        V = np.array([vx, vy, wz * 1.65]).reshape(3, 1)  # Ensure V is a 3x1 column vector
         wheel_vels = np.dot(self.K, V).flatten()  # Flatten to get a 1D array of wheel velocities
 
         return wheel_vels
@@ -112,7 +112,7 @@ class OpenLoopController:
         distance = sqrt(dx**2 + dy**2)
         angle_to_goal = atan2(dy, dx)
         
-        print("angle:", angle_to_goal)
+        print("distance:", distance, "angle:", angle_to_goal)
 
         # Clamp velocity between min and max limits
         vx = max(min_velocity, min(distance, max_velocity)) * np.cos(angle_to_goal)
@@ -137,13 +137,15 @@ class OpenLoopController:
         try:
             idx = 0
             distance_threshold = 0.1
-            angle_threshold = math.pi / 5.0  # 35 degrees
+            angle_threshold = math.pi / 9.0  # 20 degrees
             
             count = 0
 
             while idx < len(waypoints):
                 print(f"\n({idx}) Current Position:", self.x, self.y, self.theta)
                 current_wp = waypoints[idx]
+                current_wp[1] = -current_wp[1] # Flip y-coordinate
+                current_wp[2] = -current_wp[2] # Flip theta
                 print("Target: ", current_wp)
                 target_x, target_y, target_theta = current_wp
 
@@ -180,6 +182,8 @@ class OpenLoopController:
 
 if __name__ == '__main__':
     waypoints = read_waypoints('/root/hw1/waypoints_ds.txt')
+    # waypoints = read_waypoints('/root/hw1/waypoints_cal.txt')
+    # waypoints = read_waypoints('/root/hw1/waypoints_flipped.txt')
 
     mpi_ctrl = MegaPiController(port='/dev/ttyUSB0', verbose=True)
     controller = OpenLoopController(mpi_ctrl)
