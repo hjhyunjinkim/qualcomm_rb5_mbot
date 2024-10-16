@@ -50,13 +50,13 @@ class MegaPiController:
         self.setFourMotors(0, 0, 0, 0)
 
 class OpenLoopController:
-    def __init__(self, mpi_ctrl, wheel_radius=0.006):
+    def __init__(self, mpi_ctrl, wheel_radius=0.00775):
         """
         Initialize the OpenLoopController with the MegaPi controller and kinematic parameters.
         """
         self.mpi_ctrl = mpi_ctrl  # MegaPiController instance
         self.wheel_radius = wheel_radius
-        self.lx = 6.4 * wheel_radius
+        self.lx = 3.2 * wheel_radius
         self.ly = self.lx
         self.K = self._calculate_kinematic_matrix()
         
@@ -96,7 +96,7 @@ class OpenLoopController:
         """
         Compute individual wheel velocities using the kinematic model.
         """
-        V = np.array([vx, vy, wz * 1.65]).reshape(3, 1)  # Ensure V is a 3x1 column vector
+        V = np.array([vx, vy, wz * 1.2]).reshape(3, 1)  # Ensure V is a 3x1 column vector
         wheel_vels = np.dot(self.K, V).flatten()  # Flatten to get a 1D array of wheel velocities
 
         return wheel_vels
@@ -167,7 +167,7 @@ class OpenLoopController:
                 if distance_to_waypoint < distance_threshold and abs(remaining_angle) < angle_threshold: 
                     idx += 1  
 
-                time.sleep(self.dt)  # Adjust based on robot's behavior
+                time.sleep(self.dt * 2)  # Adjust based on robot's behavior
                 count += 1
                 if count == 30: # Just in case the loop never stops
                     break
@@ -182,6 +182,7 @@ class OpenLoopController:
 
 if __name__ == '__main__':
     waypoints = read_waypoints('/root/hw1/waypoints_ds.txt')
+    # waypoints = read_waypoints('/root/hw1/waypoints.txt')
     # waypoints = read_waypoints('/root/hw1/waypoints_cal.txt')
     # waypoints = read_waypoints('/root/hw1/waypoints_flipped.txt')
 
