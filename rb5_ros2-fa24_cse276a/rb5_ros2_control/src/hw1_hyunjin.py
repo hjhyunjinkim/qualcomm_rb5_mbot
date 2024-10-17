@@ -96,7 +96,8 @@ class OpenLoopController:
         """
         Compute individual wheel velocities using the kinematic model.
         """
-        V = np.array([vx, vy, wz * 1.2]).reshape(3, 1)  # Ensure V is a 3x1 column vector
+        wz = wz * 1.5 if wz > 0 else wz * 1.2  # Adjust angular velocity for better performance
+        V = np.array([vx, vy, wz]).reshape(3, 1)  # Ensure V is a 3x1 column vector
         wheel_vels = np.dot(self.K, V).flatten()  # Flatten to get a 1D array of wheel velocities
 
         return wheel_vels
@@ -167,7 +168,7 @@ class OpenLoopController:
                 if distance_to_waypoint < distance_threshold and abs(remaining_angle) < angle_threshold: 
                     idx += 1  
 
-                time.sleep(self.dt * 2)  # Adjust based on robot's behavior
+                time.sleep(self.dt * 2.05)  # Adjust based on robot's behavior
                 count += 1
                 if count == 30: # Just in case the loop never stops
                     break
@@ -175,8 +176,8 @@ class OpenLoopController:
             print("\nCtrl+C detected! Stopping the car...")
             
         finally:
-            time.sleep(1)
             self.mpi_ctrl.carStop()  # Stop the robot
+            time.sleep(1)
             print("Car stopped and closed properly.")            
 
 
