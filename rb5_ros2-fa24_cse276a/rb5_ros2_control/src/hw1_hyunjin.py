@@ -3,6 +3,7 @@ import numpy as np
 from math import atan2, sqrt
 from megapi import MegaPi  # Ensure the MegaPi library is installed
 import time
+import math
 
 # Constants for motor ports
 MFR = 2  # Motor front right
@@ -38,9 +39,9 @@ class MegaPiController:
     def setFourMotors(self, vfl=0, vfr=0, vbl=0, vbr=0):
         if self.verbose:
             print(f'Set Motors: vfl={int(vfl)}, vfr={int(vfr)}, vbl={int(vbl)}, vbr={int(vbr)}')
-        self.bot.motorRun(self.mfl, vfl)
+        self.bot.motorRun(self.mfl, -vfl)
         self.bot.motorRun(self.mfr, vfr)
-        self.bot.motorRun(self.mbl, vbl)
+        self.bot.motorRun(self.mbl, -vbl)
         self.bot.motorRun(self.mbr, vbr)
 
     def carStop(self):
@@ -49,15 +50,20 @@ class MegaPiController:
         self.setFourMotors(0, 0, 0, 0)
 
 class OpenLoopController:
-    def __init__(self, mpi_ctrl, wheel_radius=0.05, lx=0.2, ly=0.2):
+    def __init__(self, mpi_ctrl, wheel_radius=0.00775):
         """
         Initialize the OpenLoopController with the MegaPi controller and kinematic parameters.
         """
         self.mpi_ctrl = mpi_ctrl  # MegaPiController instance
         self.wheel_radius = wheel_radius
-        self.lx = lx
-        self.ly = ly
+        self.lx = 3.2 * wheel_radius
+        self.ly = self.lx
         self.K = self._calculate_kinematic_matrix()
+        
+        self.x = 0
+        self.y = 0
+        self.theta = 0
+        self.dt = 1.0  # Time step for control
 
     #def _calculate_kinematic_matrix(self):
     #    """
@@ -79,7 +85,7 @@ class OpenLoopController:
         ly = self.ly
 
         # Adjusting the matrix to align with direct kinematics
-        return (4 / r) * np.array([
+        return (1 / r) * np.array([
             [1, -1, -(lx + ly)],  # ω1
             [1, 1, (lx + ly)],    # ω2
             [1, 1, -(lx + ly)],   # ω3
@@ -90,54 +96,96 @@ class OpenLoopController:
         """
         Compute individual wheel velocities using the kinematic model.
         """
+        wz = wz * 1.5 if wz > 0 else wz * 1.2  # Adjust angular velocity for better performance
         V = np.array([vx, vy, wz]).reshape(3, 1)  # Ensure V is a 3x1 column vector
         wheel_vels = np.dot(self.K, V).flatten()  # Flatten to get a 1D array of wheel velocities
 
         return wheel_vels
 
-    def compute_velocity(self, current_wp, next_wp, min_velocity=0.1, max_velocity=0.5):
+    def compute_velocity(self, next_wp, min_velocity=0.0, max_velocity=0.5):
         """
         Compute the linear and angular velocities needed to move to the next waypoint.
         """
-        dx = next_wp[0] - current_wp[0]
-        dy = next_wp[1] - current_wp[1]
-        dtheta = next_wp[2] - current_wp[2]
+        dx = next_wp[0] - self.x
+        dy = next_wp[1] - self.y
+        dtheta = next_wp[2] - self.theta
 
         distance = sqrt(dx**2 + dy**2)
         angle_to_goal = atan2(dy, dx)
+        
+        print("distance:", distance, "angle:", angle_to_goal)
 
         # Clamp velocity between min and max limits
         vx = max(min_velocity, min(distance, max_velocity)) * np.cos(angle_to_goal)
         vy = max(min_velocity, min(distance, max_velocity)) * np.sin(angle_to_goal)
-        wz = dtheta / max(distance, 0.01)
+        # wz = dtheta / max(distance, 0.01)
+        wz = dtheta
+        
+        print("compute_velocity: ", vx, vy, wz)
 
         return vx, vy, wz
+    
+    def update_position(self, vx, vy, wz):
+        self.x += vx * self.dt
+        self.y += vy * self.dt
+        self.theta += wz * self.dt
+        self.theta = (self.theta + math.pi) % (2 * math.pi) - math.pi
 
     def navigate_to_waypoints(self, waypoints):
         """
         Navigate through a series of waypoints using open-loop control.
         """
+        try:
+            idx = 0
+            distance_threshold = 0.1
+            angle_threshold = math.pi / 9.0  # 20 degrees
+            
+            count = 0
 
-        for i in range(len(waypoints) - 1):
-            current_wp = waypoints[i]
-            next_wp = waypoints[i + 1]
+            while idx < len(waypoints):
+                print(f"\n({idx}) Current Position:", self.x, self.y, self.theta)
+                current_wp = waypoints[idx]
+                current_wp[1] = -current_wp[1] # Flip y-coordinate
+                current_wp[2] = -current_wp[2] # Flip theta
+                print("Target: ", current_wp)
+                target_x, target_y, target_theta = current_wp
 
-            vx, vy, wz = self.compute_velocity(current_wp, next_wp)
-            wheel_vels = self.calculate_wheel_velocities(vx, vy, wz)
-            wheel_vels = [int(vel) for vel in wheel_vels]
+                vx, vy, wz = self.compute_velocity(current_wp)
+                self.update_position(vx, vy, wz)
+                
+                wheel_vels = self.calculate_wheel_velocities(vx, vy, wz)
+                wheel_vels = [int(vel) for vel in wheel_vels]
 
-            # Set motor speeds using MegaPiController
-            self.mpi_ctrl.setFourMotors(
-                vfl=wheel_vels[0], vfr=wheel_vels[1],
-                vbl=wheel_vels[2], vbr=wheel_vels[3]
-            )
+                # Set motor speeds using MegaPiController
+                self.mpi_ctrl.setFourMotors(
+                    vfl=wheel_vels[0], vfr=wheel_vels[1],
+                    vbl=wheel_vels[2], vbr=wheel_vels[3]
+                )
+                
+                distance_to_waypoint = math.sqrt((target_x - self.x)**2 + (target_y - self.y)**2)
+                remaining_angle = (target_theta - self.theta + np.pi) % (2 * np.pi) - np.pi    
 
-            time.sleep(2)  # Adjust based on robot's behavior
+                if distance_to_waypoint < distance_threshold and abs(remaining_angle) < angle_threshold: 
+                    idx += 1  
 
-        self.mpi_ctrl.carStop()  # Stop the robot
+                time.sleep(self.dt * 2.05)  # Adjust based on robot's behavior
+                count += 1
+                if count == 30: # Just in case the loop never stops
+                    break
+        except KeyboardInterrupt:
+            print("\nCtrl+C detected! Stopping the car...")
+            
+        finally:
+            self.mpi_ctrl.carStop()  # Stop the robot
+            time.sleep(1)
+            print("Car stopped and closed properly.")            
+
 
 if __name__ == '__main__':
     waypoints = read_waypoints('/root/hw1/waypoints_ds.txt')
+    # waypoints = read_waypoints('/root/hw1/waypoints.txt')
+    # waypoints = read_waypoints('/root/hw1/waypoints_cal.txt')
+    # waypoints = read_waypoints('/root/hw1/waypoints_flipped.txt')
 
     mpi_ctrl = MegaPiController(port='/dev/ttyUSB0', verbose=True)
     controller = OpenLoopController(mpi_ctrl)
