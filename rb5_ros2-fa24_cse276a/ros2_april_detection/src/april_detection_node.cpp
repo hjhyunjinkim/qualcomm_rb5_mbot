@@ -13,14 +13,14 @@
 
 using std::placeholders::_1;
 // camera parameters
-double distortion_coeff[5] = {0.022327, 
-                            -0.019742, 
-                            -0.000961, 
-                            0.000625, 
+double distortion_coeff[5] = {-0.005669, 
+                            -0.005435, 
+                             -0.001050, 
+                            -0.002489, 
                             0.000000};
 
-double intrinsics[9] = {691.01615,    0.     ,  954.51,
-                      0.     ,  690.10114,  540.77467,
+double intrinsics[9] = {657.713037,    0.     ,  913.631105,
+                      0.     ,  660.263283,  542.236435,
                       0.     ,    0.     ,    1.};
 
 const cv::Mat d(cv::Size(1, 5), CV_64FC1, distortion_coeff);
