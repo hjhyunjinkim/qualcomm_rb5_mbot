@@ -21,7 +21,7 @@ class MegaPiControllerNode(Node):
         self.subscription
 
     def twist_callback(self, twist_cmd):
-        desired_twist = self.calibration * np.array([[twist_cmd.linear.x], [twist_cmd.linear.y], [twist_cmd.angular.z]])
+        desired_twist = self.calibration * np.array([[twist_cmd.linear.x], [-twist_cmd.linear.y], [twist_cmd.angular.z]])
         # calculate the jacobian matrix
         jacobian_matrix = np.array([[1, -1, -(self.lx + self.ly)],
                                      [1, 1, (self.lx + self.ly)],
@@ -30,8 +30,9 @@ class MegaPiControllerNode(Node):
         # calculate the desired wheel velocity
         result = np.dot(jacobian_matrix, desired_twist)
 
+        print(f"FL={result[0][0]:.2f}, FR={result[1][0]:.2f}, RL={result[2][0]:.2f}, RR={result[3][0]:.2f}")
         # send command to each wheel
-        self.mpi_ctrl.setFourMotors(result[0][0], result[1][0], result[2][0], result[3][0])
+        self.mpi_ctrl.setFourMotors(int(-result[0][0]), int(-result[1][0]), int(-result[2][0]), int(-result[3][0]))
 
         
 
