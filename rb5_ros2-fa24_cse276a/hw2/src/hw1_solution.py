@@ -54,18 +54,14 @@ class PIDcontroller(Node):
         self.publisher_ = self.create_publisher(Twist, '/twist', 10)
         self.current_state = np.array([0.0,0.0,0.0])
 
-
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)                
-        
-        # self.tag_locations = {'0': np.array([-0.5, 0.0, np.pi])}
-        # self.subscription = self.create_subscription(
-        #     PoseStamped,
-        #     '/april_poses',  # Adjust to the actual topic name
-        #     self.apriltag_callback,
-        #     10  # Queue size
-        # )
-        # self.subscription
+        self.tag_locations = {'0': np.array([-0.5, 0.0, np.pi])}
+        self.subscription = self.create_subscription(
+            PoseStamped,
+            '/april_poses',  # Adjust to the actual topic name
+            self.apriltag_callback,
+            10  # Queue size
+        )
+        self.subscription
         
     def apriltag_callback(self, msg):
         print("callback activated")
@@ -83,30 +79,8 @@ class PIDcontroller(Node):
         
         updated_pose = calculate_camera_pose(x, z, qx, qy, qz, qw, self.tag_locations[tag_id][0], self.tag_locations[tag_id][1], self.tag_locations[tag_id][2])
         print(f"pose updated: {updated_pose}")
-        self.current_state = updated_pose
+        self.current_state = updated_pose 
 
-    def update_camera_pose(self):
-        # Query the transform from camera to world frame
-        transform = self.get_transform('camera', 'marker_0')
-        
-        if transform is not None:
-            x_cam = transform.transform.translation.x
-            z_cam = transform.transform.translation.z
-
-            qx_cam = transform.transform.rotation.x
-            qy_cam = transform.transform.rotation.y
-            qz_cam = transform.transform.rotation.z
-            qw_cam = transform.transform.rotation.w
-
-            tag_id = '0'  # Assume tag '0' is being tracked
-            x_tag_world, y_tag_world, theta_tag_world = self.tag_locations[tag_id]
-
-            updated_pose = calculate_camera_pose(
-                x_cam, z_cam, qx_cam, qy_cam, qz_cam, qw_cam,
-                x_tag_world, y_tag_world, theta_tag_world
-            )
-            
-            self.current_state = updated_pose
 
     def setTarget(self, targetx, targety, targetw):
         """
@@ -138,12 +112,11 @@ class PIDcontroller(Node):
         """
         self.maximumValue = mv
 
-    def update(self):
+    def update(self, currentState):
         """
         calculate the update value on the state based on the error between current state and target state with PID.
         """
-        self.update_camera_pose()
-        e = self.getError(self.current_state, self.target)
+        e = self.getError(currentState, self.target)
 
         P = self.Kp * e
         self.I = self.I + self.Ki * e * self.timestep 
@@ -188,19 +161,15 @@ if __name__ == "__main__":
     import time
     #rospy.init_node("hw1")
     #pub_twist = rospy.Publisher("/twist", Twist, queue_size=1)
-
-    waypoint = np.array([[0.0,0.0,0.0], 
-                         [-0.5,0.0,0.0],
-                         [-0.5,0.5,np.pi/2.0],
-                         [-1.0,0.5,0.0],
-                         [-1.0,1.0,-np.pi/2.0],
-                         [-0.5,0.5,-np.pi/4.0],
-                         [0.0,0.0,0.0]]) 
     
     # init pid controller
     pid = PIDcontroller(0.02,0.005,0.005)
 
     # init current state
+    waypoint = np.array([[0.0,0.0,0.0], 
+                        [0.5,0.0,0.0],
+                        [0.5,1.0,np.pi],
+                        [0.0,0.0,0.0]]) 
 
     # in this loop we will go through each way point.
     # once error between the current state and the current way point is small enough, 
@@ -211,22 +180,26 @@ if __name__ == "__main__":
         pid.setTarget(wp)
 
         # calculate the current twist
-        update_value = pid.update()
+        update_value = pid.update(pid.current_state)
         # publish the twist
         pid.publisher_.publish(genTwistMsg(coord(update_value, pid.current_state)))
         #print(coord(update_value, current_state))
         time.sleep(0.05)
         # update the current state
         pid.current_state += update_value
+        rclpy.spin_once(pid, timeout_sec=0.5)
+            
         while(np.linalg.norm(pid.getError(pid.current_state, wp)) > 0.05): # check the error between current state and current way point
+            print(pid.current_state)
             # calculate the current twist
-            update_value = pid.update()
+            update_value = pid.update(pid.current_state)
             # publish the twist
             pid.publisher_.publish(genTwistMsg(coord(update_value, pid.current_state)))
             #print(coord(update_value, current_state))
             time.sleep(0.05)
             # update the current state
             pid.current_state += update_value
+            rclpy.spin_once(pid, timeout_sec=0.5)
+
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
-
