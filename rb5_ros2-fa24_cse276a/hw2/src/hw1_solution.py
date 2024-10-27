@@ -8,6 +8,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 import numpy as np
 from geometry_msgs.msg import PoseStamped
+from tf2_ros import TransformListener, Buffer
 
 """
 The class of the pid controller.
@@ -52,15 +53,19 @@ class PIDcontroller(Node):
         self.maximumValue = 0.1
         self.publisher_ = self.create_publisher(Twist, '/twist', 10)
         self.current_state = np.array([0.0,0.0,0.0])
+
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)                
         
-        self.tag_locations = {'0': np.array([-0.5, 0.0, np.pi])}
-        self.subscription = self.create_subscription(
-            PoseStamped,
-            '/april_poses',  # Adjust to the actual topic name
-            self.apriltag_callback,
-            10  # Queue size
-        )
-        self.subscription
+        # self.tag_locations = {'0': np.array([-0.5, 0.0, np.pi])}
+        # self.subscription = self.create_subscription(
+        #     PoseStamped,
+        #     '/april_poses',  # Adjust to the actual topic name
+        #     self.apriltag_callback,
+        #     10  # Queue size
+        # )
+        # self.subscription
         
     def apriltag_callback(self, msg):
         print("callback activated")
@@ -80,6 +85,28 @@ class PIDcontroller(Node):
         print(f"pose updated: {updated_pose}")
         self.current_state = updated_pose
 
+    def update_camera_pose(self):
+        # Query the transform from camera to world frame
+        transform = self.get_transform('camera', 'marker_0')
+        
+        if transform is not None:
+            x_cam = transform.transform.translation.x
+            z_cam = transform.transform.translation.z
+
+            qx_cam = transform.transform.rotation.x
+            qy_cam = transform.transform.rotation.y
+            qz_cam = transform.transform.rotation.z
+            qw_cam = transform.transform.rotation.w
+
+            tag_id = '0'  # Assume tag '0' is being tracked
+            x_tag_world, y_tag_world, theta_tag_world = self.tag_locations[tag_id]
+
+            updated_pose = calculate_camera_pose(
+                x_cam, z_cam, qx_cam, qy_cam, qz_cam, qw_cam,
+                x_tag_world, y_tag_world, theta_tag_world
+            )
+            
+            self.current_state = updated_pose
 
     def setTarget(self, targetx, targety, targetw):
         """
