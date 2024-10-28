@@ -33,7 +33,9 @@ install(TARGETS
 ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
-  scripts/rb5_mpi_control.py
+  src/mpi_control.py
+  src/rb5_control_node.py
+  src/hw1_hyunjin.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
