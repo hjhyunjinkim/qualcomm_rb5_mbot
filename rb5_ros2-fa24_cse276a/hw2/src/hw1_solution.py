@@ -9,6 +9,7 @@ from geometry_msgs.msg import Twist
 import numpy as np
 from geometry_msgs.msg import PoseStamped
 from tf2_ros import TransformListener, Buffer
+import math 
 
 """
 The class of the pid controller.
@@ -26,17 +27,15 @@ def calculate_camera_pose(x_cam, z_cam, qx_cam, qy_cam, qz_cam, qw_cam,
                           x_tag_world, y_tag_world, theta_tag_world):
     # Step 1: Convert the detected quaternion to yaw
     yaw_cam = quaternion_to_yaw(qx_cam, qy_cam, qz_cam, qw_cam)
-
+    
     # Step 2: Compute the camera's yaw in the world frame
-    theta_cam_world = theta_tag_world - yaw_cam
-
-    # Step 3: Rotate the detected AprilTag's position from the camera frame to the world frame
-    x_cam_rotated = x_cam * np.cos(-yaw_cam) - z_cam * np.sin(-yaw_cam)
-    z_cam_rotated = x_cam * np.sin(-yaw_cam) + z_cam * np.cos(-yaw_cam)
-
-    # Step 4: Calculate the camera's world position
-    x_cam_world = x_tag_world - x_cam_rotated
-    y_cam_world = y_tag_world - z_cam_rotated
+    theta_cam_world = yaw_cam + theta_tag_world
+    theta_cam_world += -np.pi/2 if yaw_cam < 0 else +np.pi/2
+    theta_cam_world = (theta_cam_world + np.pi) % (2 * np.pi) - np.pi
+    
+    d = math.sqrt(x_cam**2 + z_cam ** 2)
+    x_cam_world = x_tag_world - np.cos(theta_cam_world) * d
+    y_cam_world = y_tag_world - np.sin(theta_cam_world) * d
 
     return x_cam_world, y_cam_world, theta_cam_world
 
@@ -50,11 +49,13 @@ class PIDcontroller(Node):
         self.I = np.array([0.0,0.0,0.0])
         self.lastError = np.array([0.0,0.0,0.0])
         self.timestep = 0.1
-        self.maximumValue = 0.1
+        self.maximumValue = 0.07
         self.publisher_ = self.create_publisher(Twist, '/twist', 10)
         self.current_state = np.array([0.0,0.0,0.0])
 
-        self.tag_locations = {'0': np.array([-0.5, 0.0, np.pi])}
+        self.tag_locations = {'0': np.array([1.0, 0.0, np.pi]),
+                              '1': np.array([0.5, 1.2, -np.pi/2]),
+                              '2': np.array([-0.5, 0.5, 0])}
         self.subscription = self.create_subscription(
             PoseStamped,
             '/april_poses',  # Adjust to the actual topic name
@@ -64,12 +65,17 @@ class PIDcontroller(Node):
         self.subscription
         
     def apriltag_callback(self, msg):
-        print("callback activated")
         tag_id = msg.header.frame_id
+        
+        if tag_id not in self.tag_locations:
+            print(f"tag {tag_id} not in tag locations")
+            return
+        
         # Extract the position data from the PoseStamped message
         x = msg.pose.position.x
         y = msg.pose.position.y
         z = msg.pose.position.z
+        # print(f"tag {tag_id} detected: x={x}, y={y}, z={z}")
 
         # Extract the quaternion orientation from the PoseStamped message
         qx = msg.pose.orientation.x
@@ -78,7 +84,7 @@ class PIDcontroller(Node):
         qw = msg.pose.orientation.w 
         
         updated_pose = calculate_camera_pose(x, z, qx, qy, qz, qw, self.tag_locations[tag_id][0], self.tag_locations[tag_id][1], self.tag_locations[tag_id][2])
-        print(f"pose updated: {updated_pose}")
+        # print(f"pose updated: {updated_pose}")
         self.current_state = updated_pose 
 
 
@@ -187,10 +193,10 @@ if __name__ == "__main__":
         time.sleep(0.05)
         # update the current state
         pid.current_state += update_value
-        rclpy.spin_once(pid, timeout_sec=0.5)
+        rclpy.spin_once(pid, timeout_sec=0.05)
             
         while(np.linalg.norm(pid.getError(pid.current_state, wp)) > 0.05): # check the error between current state and current way point
-            print(pid.current_state)
+            # print(pid.current_state)
             # calculate the current twist
             update_value = pid.update(pid.current_state)
             # publish the twist
@@ -199,7 +205,7 @@ if __name__ == "__main__":
             time.sleep(0.05)
             # update the current state
             pid.current_state += update_value
-            rclpy.spin_once(pid, timeout_sec=0.5)
+            rclpy.spin_once(pid, timeout_sec=0.05)
 
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
