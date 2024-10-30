@@ -50,8 +50,9 @@ class PIDcontroller(Node):
         self.I = np.array([0.0,0.0,0.0])
         self.lastError = np.array([0.0,0.0,0.0])
         self.timestep = 0.1
-        self.maximumValue = 0.07
+        self.maximumValue = 0.06
         self.publisher_ = self.create_publisher(Twist, '/twist', 10)
+        # self.current_state = np.array([0.0,0.0,0.0])
 
         self.count = 0
         self.tag_locations = {'0': np.array([1.05, 0.0, np.pi]),
@@ -59,6 +60,9 @@ class PIDcontroller(Node):
                               '2': np.array([-0.5, 1.0, 0])}
         
         self.state = np.zeros(3)
+        self.P = np.eye(3) * 0.1
+        self.Q = np.eye(3) * 0.01
+        self.R = np.eye(3) * 0.1
         
         self.subscription = self.create_subscription(
             PoseStamped,
@@ -79,7 +83,7 @@ class PIDcontroller(Node):
         x = msg.pose.position.x
         y = msg.pose.position.y
         z = msg.pose.position.z
-
+        
         # Extract the quaternion orientation from the PoseStamped message
         qx = msg.pose.orientation.x
         qy = msg.pose.orientation.y
@@ -96,6 +100,26 @@ class PIDcontroller(Node):
             # self.lastError = np.array([0.0,0.0,0.0])
         else:
             self.count -= 1
+        # self.state = updated_pose
+
+    def kalman_predict(self):
+        """
+        Kalman filter prediction step for every control loop iteration.
+        """
+        self.P += self.Q  # Predict error covariance
+
+    def kalman_update(self, measurement):
+        # Prediction step
+        self.P += self.Q  # Predict the error covariance
+
+        # Measurement update (Correction)
+        y = measurement - self.state  # Measurement residual
+        S = self.P + self.R  # Residual covariance
+        K = self.P @ np.linalg.inv(S)  # Kalman gain
+
+        # Update state and covariance matrix
+        self.state += K @ y
+        self.P = (np.eye(3) - K) @ self.P
 
 
     def setTarget(self, targetx, targety, targetw):
@@ -204,9 +228,20 @@ if __name__ == "__main__":
         # update the current state
         pid.state += update_value
         rclpy.spin_once(pid, timeout_sec=0.05)
+        errors = []
             
         while(np.linalg.norm(pid.getError(pid.state, wp)) > 0.07): # check the error between current state and current way point
+            if len(errors) > 20:
+                errors.pop(0)
+            error = np.linalg.norm(pid.getError(pid.state, wp))
+                
+            errors.append(error)
             print(f"current state: [{pid.state[0]:.3f}, {pid.state[1]:.3f}, {pid.state[2]:.3f}]")
+            print(f"error: {error:.3f}")
+            
+            if sum(errors) / len(errors) < 0.2:
+                break
+            
             # calculate the current twist
             update_value = pid.update(pid.state)
             # publish the twist
@@ -218,6 +253,7 @@ if __name__ == "__main__":
             rclpy.spin_once(pid, timeout_sec=0.05)
         pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
         time.sleep(2.0)
-
+        # if np.array_equal(wp, waypoint[1]):
+        #     del pid.tag_locations['0']
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
