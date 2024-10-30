@@ -27,6 +27,7 @@ def calculate_camera_pose(x_cam, z_cam, qx_cam, qy_cam, qz_cam, qw_cam,
                           x_tag_world, y_tag_world, theta_tag_world):
     # Step 1: Convert the detected quaternion to yaw
     yaw_cam = quaternion_to_yaw(qx_cam, qy_cam, qz_cam, qw_cam)
+    # print(f"yaw_cam: {yaw_cam}")
     
     # Step 2: Compute the camera's yaw in the world frame
     theta_cam_world = yaw_cam + theta_tag_world
@@ -51,11 +52,14 @@ class PIDcontroller(Node):
         self.timestep = 0.1
         self.maximumValue = 0.07
         self.publisher_ = self.create_publisher(Twist, '/twist', 10)
-        self.current_state = np.array([0.0,0.0,0.0])
 
-        self.tag_locations = {'0': np.array([1.0, 0.0, np.pi]),
-                              '1': np.array([0.5, 1.2, -np.pi/2]),
-                              '2': np.array([-0.5, 0.5, 0])}
+        self.count = 0
+        self.tag_locations = {'0': np.array([1.05, 0.0, np.pi]),
+                              '1': np.array([0.5, -0.95, np.pi/2]),
+                              '2': np.array([-0.5, 1.0, 0])}
+        
+        self.state = np.zeros(3)
+        
         self.subscription = self.create_subscription(
             PoseStamped,
             '/april_poses',  # Adjust to the actual topic name
@@ -75,7 +79,6 @@ class PIDcontroller(Node):
         x = msg.pose.position.x
         y = msg.pose.position.y
         z = msg.pose.position.z
-        # print(f"tag {tag_id} detected: x={x}, y={y}, z={z}")
 
         # Extract the quaternion orientation from the PoseStamped message
         qx = msg.pose.orientation.x
@@ -84,8 +87,15 @@ class PIDcontroller(Node):
         qw = msg.pose.orientation.w 
         
         updated_pose = calculate_camera_pose(x, z, qx, qy, qz, qw, self.tag_locations[tag_id][0], self.tag_locations[tag_id][1], self.tag_locations[tag_id][2])
-        # print(f"pose updated: {updated_pose}")
-        self.current_state = updated_pose 
+        print(f"tag {tag_id} -> pose: [{updated_pose[0]:.3f}, {updated_pose[1]:.3f}, {updated_pose[2]:.3f}]")
+
+        if self.count == 0:
+            self.state = updated_pose
+            self.count = 5
+            self.I = np.array([0.0,0.0,0.0]) 
+            # self.lastError = np.array([0.0,0.0,0.0])
+        else:
+            self.count -= 1
 
 
     def setTarget(self, targetx, targety, targetw):
@@ -153,9 +163,9 @@ def genTwistMsg(desired_twist):
     twist_msg.angular.z = desired_twist[2]
     return twist_msg
 
-def coord(twist, current_state):
-    J = np.array([[np.cos(current_state[2]), np.sin(current_state[2]), 0.0],
-                  [-np.sin(current_state[2]), np.cos(current_state[2]), 0.0],
+def coord(twist, state):
+    J = np.array([[np.cos(state[2]), np.sin(state[2]), 0.0],
+                  [-np.sin(state[2]), np.cos(state[2]), 0.0],
                   [0.0,0.0,1.0]])
     return np.dot(J, twist)
     
@@ -181,31 +191,33 @@ if __name__ == "__main__":
     # once error between the current state and the current way point is small enough, 
     # the current way point will be updated with a new point.
     for wp in waypoint:
-        print("move to way point", wp)
+        print(">>>>> move to way point", wp)
         # set wp as the target point
         pid.setTarget(wp)
 
         # calculate the current twist
-        update_value = pid.update(pid.current_state)
+        update_value = pid.update(pid.state)
         # publish the twist
-        pid.publisher_.publish(genTwistMsg(coord(update_value, pid.current_state)))
-        #print(coord(update_value, current_state))
+        pid.publisher_.publish(genTwistMsg(coord(update_value, pid.state)))
+        #print(coord(update_value, state))
         time.sleep(0.05)
         # update the current state
-        pid.current_state += update_value
+        pid.state += update_value
         rclpy.spin_once(pid, timeout_sec=0.05)
             
-        while(np.linalg.norm(pid.getError(pid.current_state, wp)) > 0.05): # check the error between current state and current way point
-            # print(pid.current_state)
+        while(np.linalg.norm(pid.getError(pid.state, wp)) > 0.07): # check the error between current state and current way point
+            print(f"current state: [{pid.state[0]:.3f}, {pid.state[1]:.3f}, {pid.state[2]:.3f}]")
             # calculate the current twist
-            update_value = pid.update(pid.current_state)
+            update_value = pid.update(pid.state)
             # publish the twist
-            pid.publisher_.publish(genTwistMsg(coord(update_value, pid.current_state)))
-            #print(coord(update_value, current_state))
+            pid.publisher_.publish(genTwistMsg(coord(update_value, pid.state)))
+            #print(coord(update_value, state))
             time.sleep(0.05)
             # update the current state
-            pid.current_state += update_value
+            pid.state += update_value
             rclpy.spin_once(pid, timeout_sec=0.05)
+        pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
+        time.sleep(2.0)
 
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
