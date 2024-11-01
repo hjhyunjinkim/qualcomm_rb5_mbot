@@ -50,12 +50,12 @@ class PIDcontroller(Node):
         self.I = np.array([0.0,0.0,0.0])
         self.lastError = np.array([0.0,0.0,0.0])
         self.timestep = 0.1
-        self.maximumValue = 0.06
+        self.maximumValue = 0.08
         self.publisher_ = self.create_publisher(Twist, '/twist', 10)
         # self.current_state = np.array([0.0,0.0,0.0])
 
         self.count = 0
-        self.tag_locations = {'0': np.array([1.05, 0.0, np.pi]),
+        self.tag_locations = {'0': np.array([0.95, 0.0,  np.pi]),
                               '1': np.array([0.5, -0.95, np.pi/2]),
                               '2': np.array([-0.5, 1.0, 0])}
         
@@ -71,6 +71,9 @@ class PIDcontroller(Node):
             10  # Queue size
         )
         self.subscription
+
+        self.log_file = open("./robot_state_log.txt", "w")
+        self.start_time = time.time()
         
     def apriltag_callback(self, msg):
         tag_id = msg.header.frame_id
@@ -94,19 +97,24 @@ class PIDcontroller(Node):
         print(f"tag {tag_id} -> pose: [{updated_pose[0]:.3f}, {updated_pose[1]:.3f}, {updated_pose[2]:.3f}]")
 
         if self.count == 0:
+            self.log_state(self.state, 'P_Y')
+            self.log_state(updated_pose, 'Y')
             self.state = updated_pose
             self.count = 5
             self.I = np.array([0.0,0.0,0.0]) 
             # self.lastError = np.array([0.0,0.0,0.0])
         else:
             self.count -= 1
+            self.log_state(self.state, 'P_D')
+            self.log_state(updated_pose, 'D')
         # self.state = updated_pose
 
-    def kalman_predict(self):
-        """
-        Kalman filter prediction step for every control loop iteration.
-        """
-        self.P += self.Q  # Predict error covariance
+    def log_state(self, state=None, status='N'):
+        state = self.state if state is None else state
+        current_time = time.time() - self.start_time
+        detection_status = status
+        log_entry = f"{state[0]:.3f}, {state[1]:.3f}, {state[2]:.3f}, {current_time:.3f}, {detection_status}\n"
+        self.log_file.write(log_entry)
 
     def kalman_update(self, measurement):
         # Prediction step
@@ -211,6 +219,7 @@ if __name__ == "__main__":
                         [0.5,1.0,np.pi],
                         [0.0,0.0,0.0]]) 
 
+    patience = 20
     # in this loop we will go through each way point.
     # once error between the current state and the current way point is small enough, 
     # the current way point will be updated with a new point.
@@ -227,11 +236,12 @@ if __name__ == "__main__":
         time.sleep(0.05)
         # update the current state
         pid.state += update_value
+        pid.log_state()
         rclpy.spin_once(pid, timeout_sec=0.05)
         errors = []
             
         while(np.linalg.norm(pid.getError(pid.state, wp)) > 0.07): # check the error between current state and current way point
-            if len(errors) > 20:
+            if len(errors) > patience:
                 errors.pop(0)
             error = np.linalg.norm(pid.getError(pid.state, wp))
                 
@@ -250,6 +260,7 @@ if __name__ == "__main__":
             time.sleep(0.05)
             # update the current state
             pid.state += update_value
+            pid.log_state()
             rclpy.spin_once(pid, timeout_sec=0.05)
         pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
         time.sleep(2.0)
@@ -257,3 +268,4 @@ if __name__ == "__main__":
         #     del pid.tag_locations['0']
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
+    pid.log_file.close()
