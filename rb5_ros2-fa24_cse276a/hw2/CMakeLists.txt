@@ -24,6 +24,7 @@ install(DIRECTORY launch
 install(
   PROGRAMS
   src/hw1_solution.py
+  src/hw2_solution.py
   src/mpi_twist_control_node.py
   src/mpi_control.py
   DESTINATION lib/${PROJECT_NAME}
