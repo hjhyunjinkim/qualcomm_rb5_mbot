@@ -54,7 +54,7 @@ def quaternion_to_rotation_matrix(q):
         y2 = y * y
         z2 = z * z
         
-        # Check the norm of the quaternion! It must be a unit quaternion!
+        # Check the norm of the quaternion! It meanst be a unit quaternion!
         assert fabs(w2 + x2 + y2 + z2 - 1) < 1e-6
         
         wx = 2 * w * x
@@ -87,11 +87,11 @@ def rotation_matrix_to_quaternion(R):
 
         '''
         
-        # The rotation matrix must be orthonormal
+        # The rotation matrix meanst be orthonormal
         assert np.allclose(np.dot(R, R.conj().transpose()), np.eye(3), 
                            atol=EPSILON)
     
-        # Check the determinant of R! It must be 1.
+        # Check the determinant of R! It meanst be 1.
         assert math.isclose(np.linalg.det(R), 1, abs_tol=EPSILON)
         
         w2 = (1 + R[0, 0] + R[1, 1] + R[2, 2])
@@ -162,10 +162,10 @@ def combine_transformations(R1, t1, R2, t2):
     t_combined (numpy.ndarray): Combined translation vector, shape (3,).
     """
     # Ensure the input matrices and vectors have correct shapes
-    assert R1.shape == (3, 3), "R1 must be a 3x3 matrix"
-    assert t1.shape == (3,), "t1 must be a 3-element vector"
-    assert R2.shape == (3, 3), "R2 must be a 3x3 matrix"
-    assert t2.shape == (3,), "t2 must be a 3-element vector"
+    assert R1.shape == (3, 3), "R1 meanst be a 3x3 matrix"
+    assert t1.shape == (3,), "t1 meanst be a 3-element vector"
+    assert R2.shape == (3, 3), "R2 meanst be a 3x3 matrix"
+    assert t2.shape == (3,), "t2 meanst be a 3-element vector"
     
     T1 = np.eye(4)
     T1[:3, :3] = R1
@@ -213,6 +213,58 @@ def add_new_landmark(mean_vector, covariance_matrix):
     
     return new_mean_vector, new_covariance_matrix
 
+# TODO: get Range-Bearing Observation
+def ekf_slam_correction(mean, covariance, z, landmark_dict):
+    """
+    EKF SLAM Correction step for observed landmarks.
+
+    Parameters:
+    - mean: Current state estimate (robot pose and landmark positions).
+    - covariance: Current covariance estimate.
+    - z: List of observed features, each as [apriltag_id, r, phi] format.
+    - landmark_dict: Indices of all known landmarks with their positions.
+
+    Returns:
+    - Updated mean and covariance.
+    """
+    # Measurement noise covariance
+    sigma_r, sigma_r = np.std(np.array(list(zip(*z))), axis=1)
+    Qt = np.diag([sigma_r**2, sigma_phi**2])
+    
+    for observation in enumerate(z):
+        apriltag_id, r, phi = observation
+        
+        # Check if landmark is seen for the first time
+        if apriltag_id not in landmark_dict.keys():
+            # Initialize landmark position
+            mean_jx = mean[0] + r * np.cos(phi + mean[2])
+            mean_jy = mean[1] + r * np.sin(phi + mean[2])
+            landmark_dict[apriltag_id] = np.array([mean_jx, mean_jy])
+            
+        delta = landmark_dict[apriltag_id] - mean[:2]
+        q = np.dot(delta, delta)
+        z_hat = np.array([np.sqrt(q), np.arctan2(delta[1], delta[0]) - mean[2]])
+
+        # Compute Jacobians Fx_j and H_i_t
+        Fx_j = np.zeros((5, len(mean)))
+        Fx_j[:3, :3] = np.eye(3)
+        Fx_j[3, 2 * j + 1] = 1
+        Fx_j[4, 2 * j + 2] = 1
+
+        H_i_t = (1 / q) * np.array([
+            [-np.sqrt(q) * delta[0], -np.sqrt(q) * delta[1], 0, np.sqrt(q) * delta[0], np.sqrt(q) * delta[1]],
+            [delta[1], -delta[0], -q, -delta[1], delta[0]]
+        ]).dot(Fx_j)
+        
+        # Compute Kalman gain
+        S_i_t = H_i_t.dot(covariance).dot(H_i_t.T) + Qt
+        K_i_t = covariance.dot(H_i_t.T).dot(np.linalg.inv(S_i_t))
+
+        # Update mean and covariance
+        mean = mean + K_i_t.dot(z[i] - z_hat)
+        covariance = (np.eye(len(mean)) - K_i_t.dot(H_i_t)).dot(covariance)
+    
+    return mean, covariance
 
 class PIDcontroller(Node):
     def __init__(self, Kp, Ki, Kd):
@@ -224,7 +276,7 @@ class PIDcontroller(Node):
         self.I = np.array([0.0,0.0,0.0])
         self.lastError = np.array([0.0,0.0,0.0])
         self.timestep = 0.1
-        self.maximumValue = 0.02
+        self.maximeanmValue = 0.02
         self.publisher_ = self.create_publisher(Twist, '/twist', 10)
 
     def setTarget(self, target):
@@ -243,11 +295,11 @@ class PIDcontroller(Node):
         result[2] = (result[2] + np.pi) % (2 * np.pi) - np.pi
         return result
 
-    def setMaximumUpdate(self, mv):
+    def setMaximeanmeanpdate(self, mv):
         """
-        Set maximum velocity for stability.
+        Set maximeanm velocity for stability.
         """
-        self.maximumValue = mv
+        self.maximeanmValue = mv
 
     def update(self, currentState):
         """
@@ -260,10 +312,10 @@ class PIDcontroller(Node):
         result = P + self.I + D
         self.lastError = e
 
-        # Scale down the twist if its norm is more than the maximum value
+        # Scale down the twist if its norm is more than the maximeanm value
         resultNorm = np.linalg.norm(result)
-        if resultNorm > self.maximumValue:
-            result = (result / resultNorm) * self.maximumValue
+        if resultNorm > self.maximeanmValue:
+            result = (result / resultNorm) * self.maximeanmValue
             self.I = 0.0
 
         return result
@@ -365,6 +417,67 @@ def coord(twist, current_state):
                   [0.0,0.0,1.0]])
     return np.dot(J, twist)
 
+def ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t):
+    """
+    EKF SLAM Prediction step for robot state and landmarks.
+
+    Parameters:
+    - mean: Current state estimate (robot pose and landmark positions).
+    - covariance: Current covariance estimate.
+    - u_t: Control input [v_t, omega_t] (velocity and angular velocity).
+    - R_t: Process noise covariance matrix.
+    - delta_t: Time step duration.
+
+    Returns:
+    - Predicted mean and covariance.
+    """
+    # Extract robot pose and control inputs
+    v_t = u_t[0]
+    omega_t = u_t[1]
+    theta = mean[2, 0]  # Robot's orientation in the mean vector
+
+    # Fx matrix to map control input into the larger state space
+    Fx = np.zeros((3, mean.shape[0]))
+    Fx[:3, :3] = np.eye(3)
+
+    # Calculate predicted mean (mu_bar_t)
+    if omega_t != 0:
+        delta_mean = np.array([
+            [-v_t / omega_t * np.sin(theta) + v_t / omega_t * np.sin(theta + omega_t * delta_t)],
+            [v_t / omega_t * np.cos(theta) - v_t / omega_t * np.cos(theta + omega_t * delta_t)],
+            [omega_t * delta_t]
+        ])
+    else:
+        # Linear approximation when omega_t is zero
+        delta_mean = np.array([
+            [v_t * np.cos(theta) * delta_t],
+            [v_t * np.sin(theta) * delta_t],
+            [0]
+        ])
+
+    mean_bar = mean + Fx.T @ delta_mean
+
+    # Calculate G_t matrix (Jacobian of motion model with respect to the state)
+    G_t = np.eye(mean.shape[0])
+    if omega_t != 0:
+        G_t[:3, :3] = np.eye(3) + Fx.T @ np.array([
+            [0, 0, -v_t / omega_t * np.cos(theta) + v_t / omega_t * np.cos(theta + omega_t * delta_t)],
+            [0, 0, -v_t / omega_t * np.sin(theta) + v_t / omega_t * np.sin(theta + omega_t * delta_t)],
+            [0, 0, 0]
+        ]) @ Fx
+    else:
+        # Linearized model for G_t when omega_t is zero
+        G_t[:3, :3] = np.eye(3) + Fx.T @ np.array([
+            [0, 0, -v_t * np.sin(theta) * delta_t],
+            [0, 0, v_t * np.cos(theta) * delta_t],
+            [0, 0, 0]
+        ]) @ Fx
+
+    # Calculate predicted covariance (Sigma_bar_t)
+    covariance_bar = G_t @ covariance @ G_t.T + Fx.T @ R_t @ Fx
+
+    return mean_bar, covariance_bar
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -396,22 +509,29 @@ def main(args=None):
         time.sleep(0.05)
         # update the current state
         
-        # 1: STATE PREDICTION 
-        current_state += update_value
+        # 1: STATE PREDICTION & MEASUREMENT PREDICTION
+        v_x, v_y, omega = coord(update_value, current_state)
+        # current_state += update_value # TODO: check if needed to update the current state here
+        # mean[:3] = current_state
+        
+        u_t = np.array([np.sqrt(v_x**2 + v_y**2), omega])
+        R_t = np.diag([0.1, 0.1, 0.1])  # Process noise covariance matrix
+        delta_t = pid.timestep
         
         # 2: MEASUREMENT PREDICTION
+        mean, covariance = ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t)
+        
+        # TODO: get z from observations as Range-Bearing observation (z: [apriltag_id, r, phi])
         rclpy.spin_once(robot_state_estimator)
         found_state, estimated_state = robot_state_estimator.pose_updated, robot_state_estimator.current_state
         if found_state: # if the tag is detected, we can use it to update current state.
-            current_state = estimated_state
+            current_state = estimated_state #
         
-        # 3: OBTAIN MEASUREMENT 
+        # 3,4 OBTAIN MEASUREMENT / ASSOCIATE
+        mean, covariance = ekf_slam_correction(mean, covariance, z, landmark_dict)
         
-        # TODO: IF NEW LANDMARK DETECTED...
-        
-        # 4: ASSOCIATE 
-        
-        # 5: UDPATE
+        # 5: STATE UPDATE
+        current_state = mean[:3]
         
         
         while(np.linalg.norm(pid.getError(current_state, wp)) > 0.05): # check the error between current state and current way point
@@ -435,3 +555,4 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+
