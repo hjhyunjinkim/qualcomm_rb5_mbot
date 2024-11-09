@@ -249,7 +249,7 @@ class RobotStateEstimator(Node):
 
         # if you are not using tf2 service, define your aptiltag poses (wrt map frame) here, z value is omitted to ensure 2D transformation
         self.apriltag_world_poses = {
-            'marker_0': (1.34, 0.0, 0.0, 0.5, -0.5, 0.5, -0.5), # (x,y,z, qual_x, qual_y, qual_z, qual_w)
+            'marker_0': (1.45, 0.0, 0.0, 0.5, -0.5, 0.5, -0.5), # (x,y,z, qual_x, qual_y, qual_z, qual_w)
             'marker_1': (-0.5, 2.0, 0.0, -0.5, -0.5, 0.5, 0.5),
         }
 
@@ -257,7 +257,7 @@ class RobotStateEstimator(Node):
     def april_pose_callback(self, msg):
         # Log the number of poses in the PoseArray
         self.pose_updated = False
-        self.get_logger().info(f"Received PoseArray with {len(msg.poses)} poses")
+        # self.get_logger().info(f"Received PoseArray with {len(msg.poses)} poses")
         if len(msg.poses) < 1:
             return
         pose_ids = msg.header.frame_id.split(',')[:-1]
@@ -337,9 +337,11 @@ def main(args=None):
                          [0.0,0.0,0.0]])
 
     # init pid controller
-    pid = PIDcontroller(0.1,0.005,0.005)
-    current_state = robot_state_estimator.current_state
+    pid = PIDcontroller(0.065,0,0.05)
 
+    current_state = robot_state_estimator.current_state
+    patience = 20
+    
     for wp in waypoint:
         print("move to way point", wp)
         # set wp as the target point
@@ -353,23 +355,39 @@ def main(args=None):
         time.sleep(0.05)
         # update the current state
         current_state += update_value
+        robot_state_estimator.get_logger().info(f"Current state: {current_state}")
         rclpy.spin_once(robot_state_estimator)
         found_state, estimated_state = robot_state_estimator.pose_updated, robot_state_estimator.current_state
         if found_state: # if the tag is detected, we can use it to update current state.
             current_state = estimated_state
+            
+        errors = []
+        
         while(np.linalg.norm(pid.getError(current_state, wp)) > 0.05): # check the error between current state and current way point
+            if len(errors) > patience:
+                errors.pop(0)
+            error = np.linalg.norm(pid.getError(current_state, wp))
+            errors.append(error)
             # calculate the current twist
+            if sum(errors) / len(errors) < 0.2:
+                break
+            
             update_value = pid.update(current_state)
             # publish the twist
             pid.publisher_.publish(genTwistMsg(coord(update_value, current_state)))
-            #print(coord(update_value, current_state))
+            print("update to...", coord(update_value, current_state))
             time.sleep(0.05)
             # update the current state
             current_state += update_value
+            robot_state_estimator.get_logger().info(f"Current state: {current_state[0]:.3f}, {current_state[1]:.3f}, {current_state[2]:.3f}")
             rclpy.spin_once(robot_state_estimator)
             found_state, estimated_state = robot_state_estimator.pose_updated, robot_state_estimator.current_state
             if found_state: # if the tag is detected, we can use it to update current state.
+                # robot_state_estimator.get_logger().info(f"Estimated state: {estimated_state}")
                 current_state = estimated_state
+        pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
+        robot_state_estimator.get_logger().info("Reached waypoint")
+        time.sleep(3.0)
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
 

@@ -105,15 +105,16 @@ if __name__ == "__main__":
     #pub_twist = rospy.Publisher("/twist", Twist, queue_size=1)
 
     waypoint = np.array([[0.0,0.0,0.0], 
-                         [-1.0,0.0,0.0],
-                         [-1.0,1.0,np.pi/2.0],
-                         [-2.0,1.0,0.0],
-                         [-2.0,2.0,-np.pi/2.0],
-                         [-1.0,1.0,-np.pi/4.0],
-                         [0.0,0.0,0.0]]) 
+                         [1.0,0.0,0.0],
+                        #  [-1.0,1.0,np.pi/2.0],
+                        #  [-2.0,1.0,0.0],
+                        #  [-2.0,2.0,-np.pi/2.0],
+                        #  [-1.0,1.0,-np.pi/4.0],
+                        #  [0.0,0.0,0.0]
+                         ]) 
 
     # init pid controller
-    pid = PIDcontroller(0.02,0.005,0.005)
+    pid = PIDcontroller(0.065,0,0.03)
 
     # init current state
     current_state = np.array([0.0,0.0,0.0])
@@ -130,8 +131,8 @@ if __name__ == "__main__":
         update_value = pid.update(current_state)
         # publish the twist
         pid.publisher_.publish(genTwistMsg(coord(update_value, current_state)))
-        #print(coord(update_value, current_state))
         time.sleep(0.05)
+        print(current_state)
         # update the current state
         current_state += update_value
         while(np.linalg.norm(pid.getError(current_state, wp)) > 0.05): # check the error between current state and current way point
@@ -139,10 +140,10 @@ if __name__ == "__main__":
             update_value = pid.update(current_state)
             # publish the twist
             pid.publisher_.publish(genTwistMsg(coord(update_value, current_state)))
-            #print(coord(update_value, current_state))
             time.sleep(0.05)
             # update the current state
             current_state += update_value
+            print(current_state)
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
 
