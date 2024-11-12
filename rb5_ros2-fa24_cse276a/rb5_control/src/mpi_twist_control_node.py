@@ -16,8 +16,8 @@ class MegaPiControllerNode(Node):
         self.r = 0.025 # radius of the wheel
         self.lx = 0.055 # half of the distance between front wheel and back wheel
         self.ly = 0.07 # half of the distance between left wheel and right wheel
-        self.calibration = 110.0
-        self.angular_calibration = 110.0
+        self.calibration = 100.0
+        self.angular_calibration = 150.0
         self.subscription = self.create_subscription(Twist, '/twist', self.twist_callback, 10)
         self.subscription
 
@@ -35,9 +35,8 @@ class MegaPiControllerNode(Node):
                                      [1, -1, (self.lx + self.ly)]]) / self.r
         # calculate the desired wheel velocity
         result = np.dot(jacobian_matrix, desired_twist)
-
-        # send command to each wheel
-        print(result)
+        threshold = 50
+        result[:, 0] = np.where(np.abs(result[:, 0]) < threshold, np.sign(result[:, 0]) * threshold, result[:, 0])
         self.mpi_ctrl.setFourMotors(int(result[0][0]), int(result[1][0]), int(result[2][0]), int(result[3][0]))
 
         

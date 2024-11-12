@@ -202,18 +202,7 @@ def initialize_robot_landmarks_covariance(n_landmarks):
     
     return mean_vector, covariance_matrix
 
-def add_new_landmark(mean_vector, covariance_matrix):
-    new_mean_vector = np.vstack((mean_vector, np.zeros((2, 1))))
-    dim = covariance_matrix.shape[0]
-    new_covariance_matrix = np.zeros((dim + 2, dim + 2))
-    
-    new_covariance_matrix[:dim, :dim] = covariance_matrix
-    # Initialize new landmark's covariance (can be set to default values like [0.2, 0.2] for (x, y))
-    new_covariance_matrix[dim:dim+2, dim:dim+2] = np.diag([0.2, 0.2])
-    
-    return new_mean_vector, new_covariance_matrix
 
-# TODO: get Range-Bearing Observation
 def ekf_slam_correction(mean, covariance, z, landmark_dict):
     """
     EKF SLAM Correction step for observed landmarks.
@@ -227,44 +216,69 @@ def ekf_slam_correction(mean, covariance, z, landmark_dict):
     Returns:
     - Updated mean and covariance.
     """
-    # Measurement noise covariance
-    sigma_r, sigma_r = np.std(np.array(list(zip(*z))), axis=1)
+    # Measurement noise covariance TODO: tune these values
+    sigma_r = 0.64
+    sigma_phi = 0.65
     Qt = np.diag([sigma_r**2, sigma_phi**2])
+    mean_tx = mean[:3].squeeze()
     
-    for observation in enumerate(z):
+    for observation in z:
         apriltag_id, r, phi = observation
+        z_i = np.array([r, phi])
+        
+        if r > 2.0:
+            continue
         
         # Check if landmark is seen for the first time
         if apriltag_id not in landmark_dict.keys():
-            # Initialize landmark position
-            mean_jx = mean[0] + r * np.cos(phi + mean[2])
-            mean_jy = mean[1] + r * np.sin(phi + mean[2])
-            landmark_dict[apriltag_id] = np.array([mean_jx, mean_jy])
-            
-        delta = landmark_dict[apriltag_id] - mean[:2]
-        q = np.dot(delta, delta)
-        z_hat = np.array([np.sqrt(q), np.arctan2(delta[1], delta[0]) - mean[2]])
+            mean_jx = mean_tx[0] + r * np.cos(phi + mean_tx[2])
+            mean_jy = mean_tx[1] + r * np.sin(phi + mean_tx[2])
+            landmark_dict[apriltag_id] = {'idx': len(landmark_dict.keys())}
+            # extend mean and covariance matrix
+            mean = np.vstack((mean, [[mean_jx], [mean_jy]]))
+            new_size = mean.shape[0]
+            new_cov = np.zeros((new_size, new_size))
+            new_cov[:new_size - 2, :new_size - 2] = covariance
+
+            new_cov[-2, -2] = 0.2  
+            new_cov[-1, -1] = 0.2 
+            covariance = new_cov 
+        
+
+        j = landmark_dict[apriltag_id]['idx']
+        mean_jx = mean[3 + 2 *j, 0]
+        mean_jy = mean[3 + 2 *j + 1, 0]
+        
+        # print(f"Landmark ID: {apriltag_id} ({landmark_dict[apriltag_id]['idx']}), r: {r:.2f}, phi: {phi:.2f}, pos: ({mean_jx:.2f}, {mean_jy:.2f})")
+        
+        delta = ([mean_jx, mean_jy] - mean_tx[:2])
+        q = np.dot(delta.T, delta)
+        z_hat = np.array([np.sqrt(q), normalize_angle(np.arctan2(delta[1], delta[0]) - mean_tx[2])])
 
         # Compute Jacobians Fx_j and H_i_t
         Fx_j = np.zeros((5, len(mean)))
         Fx_j[:3, :3] = np.eye(3)
-        Fx_j[3, 2 * j + 1] = 1
-        Fx_j[4, 2 * j + 2] = 1
-
+        Fx_j[3, 2 * (j+1) + 1] = 1
+        Fx_j[4, 2 * (j+1) + 2] = 1  
+        
         H_i_t = (1 / q) * np.array([
             [-np.sqrt(q) * delta[0], -np.sqrt(q) * delta[1], 0, np.sqrt(q) * delta[0], np.sqrt(q) * delta[1]],
             [delta[1], -delta[0], -q, -delta[1], delta[0]]
         ]).dot(Fx_j)
-        
+                
         # Compute Kalman gain
         S_i_t = H_i_t.dot(covariance).dot(H_i_t.T) + Qt
         K_i_t = covariance.dot(H_i_t.T).dot(np.linalg.inv(S_i_t))
-
+        
         # Update mean and covariance
-        mean = mean + K_i_t.dot(z[i] - z_hat)
+        mean = mean + K_i_t.dot(z_i - z_hat).reshape(-1, 1)
+        mean[2] = normalize_angle(mean[2])
         covariance = (np.eye(len(mean)) - K_i_t.dot(H_i_t)).dot(covariance)
-    
+        
     return mean, covariance
+
+def normalize_angle(theta):
+    return (theta + np.pi) % (2 * np.pi) - np.pi
 
 class PIDcontroller(Node):
     def __init__(self, Kp, Ki, Kd):
@@ -331,70 +345,65 @@ class RobotStateEstimator(Node):
             10)
         self.subscription
         self.br = TransformBroadcaster(self)
-        self.current_state = np.array([0.0, 0.0, 0.0])
-        self.pose_updated = True
-
-        # if you are not using tf2 service, define your aptiltag poses (wrt map frame) here, z value is omitted to ensure 2D transformation
-        self.apriltag_world_poses = {
-            'marker_0': (0.67, 0.0, 0.0, 0.5, -0.5, 0.5, -0.5), # (x,y,z, qual_x, qual_y, qual_z, qual_w)
-            'marker_1': (-0.5, 1.2, 0.0, -0.5, -0.5, 0.5, 0.5),
-            # 'marker_2': (-0.5, 2.0, 0.0, -0.5, -0.5, 0.5, 0.5),
-        }
-
+        self.z = np.array([], dtype=np.float64)
+        self.landmark_detected = False
+        self.theta_r = 0.0
 
     def april_pose_callback(self, msg):
         # Log the number of poses in the PoseArray
-        self.pose_updated = False
-        self.get_logger().info(f"Received PoseArray with {len(msg.poses)} poses")
+        self.landmark_detected = False
+        self.z = np.array([], dtype=np.float64)
+        # self.get_logger().info(f"Received PoseArray with {len(msg.poses)} poses")
         if len(msg.poses) < 1:
             return
-        pose_ids = msg.header.frame_id.split(',')[:-1]
-        
-        # we will only use one landmark at a time in homework 2. in homework 3, all landmarks should be considered.
-        tag_id = pose_ids[0]
-        if tag_id not in self.apriltag_world_poses.keys():
-            return
-        pose_camera_apriltag = msg.poses[0]   # syntax: pose_ReferenceFrame_TargetFrame
-        trans_camera_apriltag = np.array([
-            pose_camera_apriltag.position.x,
-            pose_camera_apriltag.position.y,
-            pose_camera_apriltag.position.z,
-        ])
-        quat_camera_apriltag = np.array([
-            pose_camera_apriltag.orientation.x,
-            pose_camera_apriltag.orientation.y,
-            pose_camera_apriltag.orientation.z,
-            pose_camera_apriltag.orientation.w,
-        ])
-        rot_camera_apriltag = quaternion_to_rotation_matrix(quat_camera_apriltag)
+        pose_ids = msg.header.frame_id.split(',')[:-1]    
+        z_list = []
 
-        # project to 2d
-        trans_camera_apriltag_2d = trans_camera_apriltag
-        trans_camera_apriltag_2d[1] = 0.0
+        for i, pose_camera_apriltag in enumerate(msg.poses):
+            tag_id = int(pose_ids[i].replace('marker_', ''))
 
-        rot_camera_apriltag_2d = np.array([
+            trans_camera_apriltag = np.array([
+                pose_camera_apriltag.position.x,
+                pose_camera_apriltag.position.y,
+                pose_camera_apriltag.position.z,
+            ])
+            quat_camera_apriltag = np.array([
+                pose_camera_apriltag.orientation.x,
+                pose_camera_apriltag.orientation.y,
+                pose_camera_apriltag.orientation.z,
+                pose_camera_apriltag.orientation.w,
+            ])
+            rot_camera_apriltag = quaternion_to_rotation_matrix(quat_camera_apriltag)
+
+            # Project to 2D (ignore y-axis)
+            trans_camera_apriltag_2d = trans_camera_apriltag
+            trans_camera_apriltag_2d[1] = 0.0  
+            
+            rot_camera_apriltag_2d = np.array([
             [rot_camera_apriltag[0,0], 0.0, rot_camera_apriltag[2,0]],
             [0.0, 1.0, 0.0],
             [rot_camera_apriltag[2,0], 0.0, rot_camera_apriltag[0,0]],
-        ])
+            ])
 
-        rot_apriltag_camera_2d = rot_camera_apriltag_2d.T
-        trans_apriltag_camera_2d = -np.dot(rot_apriltag_camera_2d, trans_camera_apriltag_2d)
+            # yaw = np.arctan2(rot_camera_apriltag[2, 0], rot_camera_apriltag[0, 0])
+
+            theta_r = self.theta_r
+            dx = trans_camera_apriltag_2d[2] * np.cos(theta_r) + trans_camera_apriltag_2d[0] * np.sin(theta_r)
+            dy = trans_camera_apriltag_2d[2] * np.sin(theta_r) - trans_camera_apriltag_2d[0] * np.cos(theta_r)
+
+            # Calculate range (r) and bearing (phi) in the world frame
+            r = np.hypot(dx, dy)  # Equivalent to np.sqrt(dx**2 + dy**2)
+            phi = normalize_angle(normalize_angle(math.atan2(dy, dx)) - theta_r)
+
+            # Append the result as [tag_id, r, phi] to the list
+            z_list.append([tag_id, r, phi])
+
+        # Convert the list to a NumPy array of shape (n_landmarks, 3)
+        self.z = np.array(z_list)
         
-        # retrieve static transformation of apriltags wrt map
-        rot_map_apriltag = quaternion_to_rotation_matrix(self.apriltag_world_poses[tag_id][3:])
-        trans_map_apriltag = np.asarray(self.apriltag_world_poses[tag_id][:3])
-
-        # apply transfomation
-        T_map_camera = combine_transformations(
-            rot_map_apriltag, trans_map_apriltag,
-            rot_apriltag_camera_2d, trans_apriltag_camera_2d,
-        )
-        rot_map_camera, trans_map_camera = T_map_camera[:3, :3], T_map_camera[:3, 3]
-        angle = math.atan2(rot_map_camera[1][2], rot_map_camera[0][2])
-
-        self.current_state = np.array([trans_map_camera[0], trans_map_camera[1], angle])
-        self.pose_updated = True
+        if len(self.z.shape) == 1:
+            self.z = np.expand_dims(self.z, axis=0)
+        self.landmark_detected = True
 
 
 def genTwistMsg(desired_twist):
@@ -432,9 +441,9 @@ def ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t):
     - Predicted mean and covariance.
     """
     # Extract robot pose and control inputs
-    v_t = u_t[0]
-    omega_t = u_t[1]
     theta = mean[2, 0]  # Robot's orientation in the mean vector
+    v_x, v_y, omega_t = u_t
+    v_t = v_x * np.cos(theta) + v_y * np.sin(theta)
 
     # Fx matrix to map control input into the larger state space
     Fx = np.zeros((3, mean.shape[0]))
@@ -460,14 +469,14 @@ def ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t):
     # Calculate G_t matrix (Jacobian of motion model with respect to the state)
     G_t = np.eye(mean.shape[0])
     if omega_t != 0:
-        G_t[:3, :3] = np.eye(3) + Fx.T @ np.array([
+        G_t += Fx.T @ np.array([
             [0, 0, -v_t / omega_t * np.cos(theta) + v_t / omega_t * np.cos(theta + omega_t * delta_t)],
             [0, 0, -v_t / omega_t * np.sin(theta) + v_t / omega_t * np.sin(theta + omega_t * delta_t)],
             [0, 0, 0]
         ]) @ Fx
     else:
         # Linearized model for G_t when omega_t is zero
-        G_t[:3, :3] = np.eye(3) + Fx.T @ np.array([
+        G_t += Fx.T @ np.array([
             [0, 0, -v_t * np.sin(theta) * delta_t],
             [0, 0, v_t * np.cos(theta) * delta_t],
             [0, 0, 0]
@@ -478,76 +487,176 @@ def ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t):
 
     return mean_bar, covariance_bar
 
+def log_state(idx, timestamp, state, mean, covariance, landamrk_dict):
+    lm_str = ''
+    for key, value in landamrk_dict.items():
+        idx = value['idx']
+        mean_per_lm = mean[3 + 2 * idx:3 + 2 * idx + 2]
+        cov_per_lm = covariance[3 + 2 * idx:3 + 2 * idx + 2, 3 + 2 * idx:3 + 2 * idx + 2]
+        lm_str += f"\t|[{int(key)}] [{mean_per_lm[0]}, {mean_per_lm[1]}] / [{cov_per_lm[0, 0]}, {cov_per_lm[0, 1]}, {cov_per_lm[1, 0]} {cov_per_lm[1, 1]}|\n"
+    log_entry = f"{idx}, {timestamp:.3f}, {state[0]:.3f}, {state[1]:.3f}, {state[2]:.3f}" + lm_str + "\n"
+    return log_entry
+
+def generate_octagon_trajectory(e):
+    trajectory = [
+        (0, 0, 0),     
+        (e, 0, 0), 
+        (e + e / np.sqrt(2), e / np.sqrt(2), np.pi / 4),
+        (e + e / np.sqrt(2), e + e / np.sqrt(2), np.pi / 2),
+        (e, e + 2 * e / np.sqrt(2), 3 * np.pi / 4),
+        (0, e + 2 * e / np.sqrt(2), np.pi),
+        (- e / np.sqrt(2), e + e / np.sqrt(2), -3 * np.pi / 4),
+        (- e / np.sqrt(2), e / np.sqrt(2), -np.pi / 2),
+        (0, 0, 0)
+    ]
+    
+    return trajectory
+
+def get_scale_factor(vel):
+    r = 0.025 # radius of the wheel
+    lx = 0.055 # half of the distance between front wheel and back wheel
+    ly = 0.07 # half of the distance between left wheel and right wheel
+    calibration = 120.0
+    angular_calibration = 120.0
+        
+    desired_twist = np.array([
+        [calibration * vel.linear.x],
+        [calibration * -vel.linear.y],
+        [angular_calibration * vel.angular.z]
+    ])
+
+    # calculate the jacobian matrix
+    jacobian_matrix = np.array([[1, -1, -(lx + ly)],
+                                    [1, 1,  (lx + ly)],
+                                    [1, 1, -(lx + ly)],
+                                    [1, -1, (lx + ly)]]) / r
+    # calculate the desired wheel velocity
+    result = np.dot(jacobian_matrix, desired_twist)
+    scale_factor = 50 / np.min(np.abs(result))
+    
+    if scale_factor < 1:
+        scale_factor = 1.2
+        
+    return scale_factor
+
 
 def main(args=None):
     rclpy.init(args=args)
     robot_state_estimator = RobotStateEstimator()
-    waypoint = np.array([[0.0,0.0,0.0], 
-                         [0.5,0.0,0.0],
-                         [0.5,1.0,np.pi],
-                         [0.0,0.0,0.0]])
+    log_file = open("./robot_state_log.txt", "w")
+    start_time = time.time()
+    
+    
+    n = 0.7
+    square_waypoints = np.array([
+        [0.0, 0.0, 0.0],
+        [n, 0.0, 0.0],
+        [n, n, np.pi/2],
+        [0.0, n, np.pi],
+        [0.0, 0.0, -np.pi/2]
+    ])
 
+
+    octagon_waypoints = generate_octagon_trajectory(e=0.5)
+    # octagon_waypoints = octagon_waypoints + octagon_waypoints + octagon_waypoints # repeat the trajectory 3 times
+    # waypoint = square_waypoints
+    waypoint = octagon_waypoints
     # init pid controller
-    pid = PIDcontroller(0.1,0.005,0.005)
-    current_state = robot_state_estimator.current_state
+    pid = PIDcontroller(0.062,0,0.0005)
+    # pid = PIDcontroller(0.1,0.005,0.005)
+    current_state = np.array([0.0,0.0,0.0])
     
     # init vectors for KF - the number of lms are unknown 
     mean, covariance = initialize_robot_landmarks_covariance(n_landmarks=0)
-    # init landmark list
-    landmark_ids = []
-
-    for wp in waypoint:
-        print("move to way point", wp)
+    R_t = np.diag([0.2, 0.2453, 0.1699])  # Process noise covariance matrix
+    # R_t = np.diag([0.3, 0.3, 0.5])  # Process noise covariance matrix
+    landmark_dict = {}
+    delta_t = pid.timestep
+    
+    for i, wp in enumerate(waypoint):
+        patience = 15  
+        stuck_counter = 0 
+        last_state = np.array(current_state)
+        last_velocity = np.array([0.0, 0.0, 0.0])  
+        
+        print(">>> move to way point", wp, "\n")
         # set wp as the target point
         pid.setTarget(wp)
 
         # calculate the current twist
         update_value = pid.update(current_state)
         # publish the twist
-        pid.publisher_.publish(genTwistMsg(coord(update_value, current_state)))
-        #print(coord(update_value, current_state))
-        time.sleep(0.05)
-        # update the current state
+        velocity = coord(update_value, current_state)
+        pid.publisher_.publish(genTwistMsg(velocity))
+        time.sleep(delta_t / 2)
         
+        last_velocity = np.array(velocity)
+        last_state = np.array(current_state)
+
         # 1: STATE PREDICTION & MEASUREMENT PREDICTION
-        v_x, v_y, omega = coord(update_value, current_state)
-        # current_state += update_value # TODO: check if needed to update the current state here
-        # mean[:3] = current_state
-        
-        u_t = np.array([np.sqrt(v_x**2 + v_y**2), omega])
-        R_t = np.diag([0.1, 0.1, 0.1])  # Process noise covariance matrix
-        delta_t = pid.timestep
+        u_t = np.array(velocity)
         
         # 2: MEASUREMENT PREDICTION
         mean, covariance = ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t)
-        
-        # TODO: get z from observations as Range-Bearing observation (z: [apriltag_id, r, phi])
+        robot_state_estimator.theta_r = mean[2].item()
         rclpy.spin_once(robot_state_estimator)
-        found_state, estimated_state = robot_state_estimator.pose_updated, robot_state_estimator.current_state
-        if found_state: # if the tag is detected, we can use it to update current state.
-            current_state = estimated_state #
-        
+        z = robot_state_estimator.z
         # 3,4 OBTAIN MEASUREMENT / ASSOCIATE
         mean, covariance = ekf_slam_correction(mean, covariance, z, landmark_dict)
-        
+            
         # 5: STATE UPDATE
-        current_state = mean[:3]
+        current_state = mean[:3].squeeze()
+        log_file.write(log_state(i, time.time() - start_time, current_state, mean, covariance, landmark_dict))
+        # print(f'current state {i}: {current_state[0]:.2f}, {current_state[1]:.2f}, {current_state[2]:.2f}')
         
-        
-        while(np.linalg.norm(pid.getError(current_state, wp)) > 0.05): # check the error between current state and current way point
+        while(np.linalg.norm(pid.getError(current_state, wp)) > 0.05): # check the error between current state and current way point)
             # calculate the current twist
             update_value = pid.update(current_state)
             # publish the twist
-            pid.publisher_.publish(genTwistMsg(coord(update_value, current_state)))
+            velocity = coord(update_value, current_state)
+            state_diff = np.linalg.norm(pid.getError(current_state, last_state))
+            vel_diff = np.linalg.norm(velocity - last_velocity)
+            print(f'{state_diff:.6f} {vel_diff:.6f}')
+
+            # if state_diff < 0.007 and vel_diff < 0.001 and len(z) > 0:
+            #     stuck_counter += 1
+            #     if stuck_counter >= patience:
+            #         velocity *= get_scale_factor(genTwistMsg(velocity))
+            #         stuck_counter = -20  # Apply larger velocity for 5 iterations
+            #         print("!!! Applying larger velocity to escape stuck state.")
+            # elif state_diff < 0.007 and stuck_counter < 0:
+            #     velocity *= get_scale_factor(genTwistMsg(velocity))
+            #     stuck_counter += 1
+            # else:
+            #     stuck_counter = 0 
+
+            last_state = np.array(current_state)
+            last_velocity = np.array(velocity)
+                            
+            pid.publisher_.publish(genTwistMsg(velocity))
             #print(coord(update_value, current_state))
-            time.sleep(0.05)
-            # update the current state
-            current_state += update_value
+            time.sleep(delta_t / 2)
+            
+            # 1: STATE PREDICTION
+            u_t = np.array(velocity)
+                      
+            # 2: MEASUREMENT PREDICTION
+            mean, covariance = ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t)
+            robot_state_estimator.theta_r = mean[2].item()
+
             rclpy.spin_once(robot_state_estimator)
-            found_state, estimated_state = robot_state_estimator.pose_updated, robot_state_estimator.current_state
-            if found_state: # if the tag is detected, we can use it to update current state.
-                current_state = estimated_state
-    # stop the car and exit
+            z = robot_state_estimator.z
+            # 3,4 OBTAIN MEASUREMENT / ASSOCIATE
+            mean, covariance = ekf_slam_correction(mean, covariance, z, landmark_dict)
+
+            # 5: STATE UPDATE
+            current_state = mean[:3].squeeze()
+            log_file.write(log_state(i, time.time() - start_time, current_state, mean, covariance, landmark_dict))
+            print(f'current state {i}: {current_state[0]:.4f}, {current_state[1]:.4f}, {current_state[2]:.4f}')    # stop the car and exit
+        
+        pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
+        time.sleep(3.0)
+
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
 
     robot_state_estimator.destroy_node()
