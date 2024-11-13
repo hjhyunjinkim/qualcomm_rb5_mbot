@@ -487,14 +487,14 @@ def ekf_slam_prediction(mean, covariance, u_t, R_t, delta_t):
 
     return mean_bar, covariance_bar
 
-def log_state(idx, timestamp, state, mean, covariance, landamrk_dict):
+def log_state(waypoint_idx, timestamp, state, mean, covariance, landamrk_dict):
     lm_str = ''
     for key, value in landamrk_dict.items():
         idx = value['idx']
         mean_per_lm = mean[3 + 2 * idx:3 + 2 * idx + 2]
         cov_per_lm = covariance[3 + 2 * idx:3 + 2 * idx + 2, 3 + 2 * idx:3 + 2 * idx + 2]
         lm_str += f"\t|[{int(key)}] [{mean_per_lm[0]}, {mean_per_lm[1]}] / [{cov_per_lm[0, 0]}, {cov_per_lm[0, 1]}, {cov_per_lm[1, 0]} {cov_per_lm[1, 1]}|\n"
-    log_entry = f"{idx}, {timestamp:.3f}, {state[0]:.3f}, {state[1]:.3f}, {state[2]:.3f}" + lm_str + "\n"
+    log_entry = f"{waypoint_idx}, {timestamp:.3f}, {state[0]:.3f}, {state[1]:.3f}, {state[2]:.3f}" + lm_str + "\n"
     return log_entry
 
 def generate_octagon_trajectory(e):
@@ -516,8 +516,8 @@ def get_scale_factor(vel):
     r = 0.025 # radius of the wheel
     lx = 0.055 # half of the distance between front wheel and back wheel
     ly = 0.07 # half of the distance between left wheel and right wheel
-    calibration = 120.0
-    angular_calibration = 120.0
+    calibration = 100.0
+    angular_calibration = 180.0
         
     desired_twist = np.array([
         [calibration * vel.linear.x],
@@ -532,9 +532,9 @@ def get_scale_factor(vel):
                                     [1, -1, (lx + ly)]]) / r
     # calculate the desired wheel velocity
     result = np.dot(jacobian_matrix, desired_twist)
-    scale_factor = 50 / np.min(np.abs(result))
+    scale_factor = 60 / np.max(np.abs(result))
     
-    if scale_factor < 1:
+    if scale_factor <= 1:
         scale_factor = 1.2
         
     return scale_factor
@@ -557,10 +557,11 @@ def main(args=None):
     ])
 
 
-    octagon_waypoints = generate_octagon_trajectory(e=0.5)
+    # octagon_waypoints = generate_octagon_trajectory(e=0.5)
     # octagon_waypoints = octagon_waypoints + octagon_waypoints + octagon_waypoints # repeat the trajectory 3 times
-    # waypoint = square_waypoints
-    waypoint = octagon_waypoints
+    # waypoint = np.tile(square_waypoints, (3,1))
+    # waypoint = np.tile(octagon_waypoints, (3,1))
+    waypoint = square_waypoints
     # init pid controller
     pid = PIDcontroller(0.062,0,0.0005)
     # pid = PIDcontroller(0.1,0.005,0.005)
@@ -574,7 +575,7 @@ def main(args=None):
     delta_t = pid.timestep
     
     for i, wp in enumerate(waypoint):
-        patience = 15  
+        patience = 5
         stuck_counter = 0 
         last_state = np.array(current_state)
         last_velocity = np.array([0.0, 0.0, 0.0])  
@@ -616,19 +617,22 @@ def main(args=None):
             velocity = coord(update_value, current_state)
             state_diff = np.linalg.norm(pid.getError(current_state, last_state))
             vel_diff = np.linalg.norm(velocity - last_velocity)
-            print(f'{state_diff:.6f} {vel_diff:.6f}')
 
-            # if state_diff < 0.007 and vel_diff < 0.001 and len(z) > 0:
-            #     stuck_counter += 1
-            #     if stuck_counter >= patience:
-            #         velocity *= get_scale_factor(genTwistMsg(velocity))
-            #         stuck_counter = -20  # Apply larger velocity for 5 iterations
-            #         print("!!! Applying larger velocity to escape stuck state.")
-            # elif state_diff < 0.007 and stuck_counter < 0:
-            #     velocity *= get_scale_factor(genTwistMsg(velocity))
-            #     stuck_counter += 1
-            # else:
-            #     stuck_counter = 0 
+            if state_diff < 0.007 and vel_diff < 0.001 and len(z) > 0:
+                stuck_counter += 1
+                if stuck_counter >= patience:
+                    velocity *= get_scale_factor(genTwistMsg(velocity))
+                    stuck_counter = -30  # Apply larger velocity for 5 iterations
+                    print("!!! Applying larger velocity to escape stuck state.")
+            elif state_diff < 0.007 and stuck_counter < 0:
+                velocity *= get_scale_factor(genTwistMsg(velocity))
+                if stuck_counter >= -10:
+                    velocity *= 1.7
+                elif stuck_counter >= -20:
+                    velocity *= 1.5
+                stuck_counter += 1
+            else:
+                stuck_counter = 0 
 
             last_state = np.array(current_state)
             last_velocity = np.array(velocity)
@@ -654,8 +658,8 @@ def main(args=None):
             log_file.write(log_state(i, time.time() - start_time, current_state, mean, covariance, landmark_dict))
             print(f'current state {i}: {current_state[0]:.4f}, {current_state[1]:.4f}, {current_state[2]:.4f}')    # stop the car and exit
         
-        pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
-        time.sleep(3.0)
+        # pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
+        # time.sleep(3.0)
 
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
 
