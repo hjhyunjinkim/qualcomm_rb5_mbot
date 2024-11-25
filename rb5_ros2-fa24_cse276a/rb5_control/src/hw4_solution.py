@@ -309,64 +309,67 @@ class RobotStateEstimator(Node):
             return
         pose_ids = msg.header.frame_id.split(',')[:-1]
         
-        # we will only use one landmark at a time in homework 2. in homework 3, all landmarks should be considered.
-        tag_id = pose_ids[0]
+        tag_ids = pose_ids
         
-        if tag_id not in self.apriltag_world_poses.keys():
-            print(f"Tag ID {tag_id} not found in the list of known tags")
-            return
+        valid_tags = []
+        estimated_poses = []
         
-        pose_camera_apriltag = msg.poses[0]   # syntax: pose_ReferenceFrame_TargetFrame
-        trans_camera_apriltag = np.array([
-            pose_camera_apriltag.position.x,
-            pose_camera_apriltag.position.y,
-            pose_camera_apriltag.position.z,
-        ])
-        quat_camera_apriltag = np.array([
-            pose_camera_apriltag.orientation.x,
-            pose_camera_apriltag.orientation.y,
-            pose_camera_apriltag.orientation.z,
-            pose_camera_apriltag.orientation.w,
-        ])
-        rot_camera_apriltag = quaternion_to_rotation_matrix(quat_camera_apriltag)
+        for i, tag_id in enumerate(tag_ids):
+            if tag_id not in self.apriltag_world_poses.keys():
+                print(f"Tag ID {tag_id} not found in the list of known tags")
+                return
+            
+            pose_camera_apriltag = msg.poses[i]   # syntax: pose_ReferenceFrame_TargetFrame
+            trans_camera_apriltag = np.array([
+                pose_camera_apriltag.position.x,
+                pose_camera_apriltag.position.y,
+                pose_camera_apriltag.position.z,
+            ])
+            quat_camera_apriltag = np.array([
+                pose_camera_apriltag.orientation.x,
+                pose_camera_apriltag.orientation.y,
+                pose_camera_apriltag.orientation.z,
+                pose_camera_apriltag.orientation.w,
+            ])
+            rot_camera_apriltag = quaternion_to_rotation_matrix(quat_camera_apriltag)
 
-        # project to 2d
-        trans_camera_apriltag_2d = trans_camera_apriltag
-        trans_camera_apriltag_2d[1] = 0.0
+            # project to 2d
+            trans_camera_apriltag_2d = trans_camera_apriltag
+            trans_camera_apriltag_2d[1] = 0.0
 
-        # rot_camera_apriltag_2d = np.array([
-        #     [rot_camera_apriltag[0,0], 0.0, rot_camera_apriltag[2,0]],
-        #     [0.0, 1.0, 0.0],
-        #     [rot_camera_apriltag[2,0], 0.0, rot_camera_apriltag[0,0]],
-        # ])
-        rot_camera_apriltag_2d = rot_camera_apriltag
-
-        # if abs(rot_camera_apriltag[2,0]) > 0.75 or abs(rot_camera_apriltag[0,0]) > 0.75:
-        #     return
-
-        rot_apriltag_camera_2d = rot_camera_apriltag_2d.T
-        trans_apriltag_camera_2d = -np.dot(rot_apriltag_camera_2d, trans_camera_apriltag_2d)
-        
-        if isinstance(self.apriltag_world_poses[tag_id], list):
-            # If multiple tags with the same ID, find the nearest one
-            candidate_states = []
-            for pose in self.apriltag_world_poses[tag_id]:
-                candidate_state = self.compute_candidate_state(
-                    pose[:3], pose[3:], rot_apriltag_camera_2d, trans_apriltag_camera_2d
+            rot_camera_apriltag_2d = rot_camera_apriltag
+            rot_apriltag_camera_2d = rot_camera_apriltag_2d.T
+            trans_apriltag_camera_2d = -np.dot(rot_apriltag_camera_2d, trans_camera_apriltag_2d)
+            
+            if isinstance(self.apriltag_world_poses[tag_id], list):
+                candidate_states = []
+                for pose in self.apriltag_world_poses[tag_id]:
+                    candidate_state = self.compute_candidate_state(
+                        pose[:3], pose[3:], rot_apriltag_camera_2d, trans_apriltag_camera_2d
+                    )
+                    candidate_states.append(candidate_state)
+                    
+                dists = [np.linalg.norm(state - self.current_state) for state in candidate_states]
+                final_pose = candidate_states[np.argmin(dists)]
+                print(f"tag id: {tag_id} ({np.argmin(dists)}) final pose: {final_pose}")
+            else:
+                final_pose = self.compute_candidate_state(
+                    self.apriltag_world_poses[tag_id][:3],
+                    self.apriltag_world_poses[tag_id][3:],
+                    rot_apriltag_camera_2d,
+                    trans_apriltag_camera_2d,
                 )
-                candidate_states.append(candidate_state)
-                
-            dists = [np.linalg.norm(state - self.current_state) for state in candidate_states]
-            final_pose = candidate_states[np.argmin(dists)]
-            print(f"tag id: {tag_id} ({np.argmin(dists)})")
-        else:
-            final_pose = self.compute_candidate_state(
-                self.apriltag_world_poses[tag_id][:3],
-                self.apriltag_world_poses[tag_id][3:],
-                rot_apriltag_camera_2d,
-                trans_apriltag_camera_2d,
-            )
-            print(f"tag id: {tag_id} final pose: {final_pose}")
+                print(f"tag id: {tag_id} final pose: {final_pose}")
+        
+            valid_tags.append(tag_id)
+            estimated_poses.append(final_pose)
+
+        if not estimated_poses:
+            print("No valid tags detected.")
+            return
+
+        final_pose = np.average(estimated_poses, axis=0)
+       
         self.current_state = final_pose
         self.pose_updated = True
 
@@ -395,28 +398,17 @@ def coord(twist, current_state):
 def main(args=None):
     rclpy.init(args=args)
     robot_state_estimator = RobotStateEstimator()
-    # waypoint = np.array([[0.0,0.0,0.0], 
-    #                      [1.0,0.0,0.0],
-    #                      [1.0,2.0,np.pi],
-    #                      [0.0,0.0,0.0]])
-    # Time Waypoint - in feet 
-    # waypoint = np.array([[0.0, 0.0, 0.0],
-    #                  [-3.5, 1.5, 0.371 * np.pi],
-    #                  [-5.0, 5.0, 0.129 * np.pi]])
+    
+    # TIME
     waypoint = np.array([[0.0, 0.0, 0.0],
                      [1.2192, 0.9144, 0.6435],
                      [1.8288, 2.4384, 1.1903]])
     
-    # # Safety Waypoint - in feet
-    # waypoint = np.array([
-    #                 [0.0, 0.0, 0.0], 
-    #                 [0.5, 4.5, -0.0352 * np.pi], 
-    #                 [-5.0, 5.0, 0.468 * np.pi]])
-
-    # waypoint = np.array([[0.0, 0.0, 0.0], 
-    #                 [0.1524, 1.3716, -0.0352 * np.pi], 
-    #                 [-1.524, 1.524, 0.468 * np.pi]])
-
+    # SAFETY
+    waypoint = np.array([[0.0, 0.0, 0.0],
+                     [1.524, 0.6096, 0.38050638],
+                     [1.8288,2.4384, 1.40564765]])
+    
     # init pid controller
     pid = PIDcontroller(0.065,0,0.05)
 
@@ -467,8 +459,8 @@ def main(args=None):
                 # robot_state_estimator.get_logger().info(f"Estimated state: {estimated_state}")
                 current_state = estimated_state
         pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
-        robot_state_estimator.get_logger().info("Reached waypoint")
-        time.sleep(3.0)
+        # robot_state_estimator.get_logger().info("Reached waypoint")
+        # time.sleep(3.0)
     # stop the car and exit
     pid.publisher_.publish(genTwistMsg(np.array([0.0,0.0,0.0])))
 
