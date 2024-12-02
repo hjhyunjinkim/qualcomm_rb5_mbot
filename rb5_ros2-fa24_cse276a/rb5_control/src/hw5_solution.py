@@ -177,7 +177,36 @@ def combine_transformations(R1, t1, R2, t2):
     
     return np.dot(T1, T2)
 
+def get_scale_factor(vel):
+    r = 0.025 # radius of the wheel
+    lx = 0.055 # half of the distance between front wheel and back wheel
+    ly = 0.07 # half of the distance between left wheel and right wheel
+    calibration = 100.0
+    angular_calibration = 180.0
+        
+    desired_twist = np.array([
+        [calibration * vel.linear.x],
+        [calibration * -vel.linear.y],
+        [angular_calibration * vel.angular.z]
+    ])
 
+    # calculate the jacobian matrix
+    jacobian_matrix = np.array([[1, -1, -(lx + ly)],
+                                    [1, 1,  (lx + ly)],
+                                    [1, 1, -(lx + ly)],
+                                    [1, -1, (lx + ly)]]) / r
+    # calculate the desired wheel velocity
+    result = np.dot(jacobian_matrix, desired_twist)
+    scale_factor = 75 / np.max(np.abs(result))
+    
+    if scale_factor <= 1:
+        scale_factor = 1.2
+        
+    return scale_factor
+
+def log_state(waypoint_idx, timestamp, state):
+    log_entry = f"{waypoint_idx}, {timestamp:.3f}, {state[0]:.3f}, {state[1]:.3f}, {state[2]:.3f}" + "\n" 
+    return log_entry
 
 class PIDcontroller(Node):
     def __init__(self, Kp, Ki, Kd):
@@ -255,20 +284,26 @@ class RobotStateEstimator(Node):
         quat_mpi_2 = tuple(quaternion_from_euler(-np.pi/2, 0, 0))
 
         self.apriltag_world_poses = {
-            'marker_0': [(8, 7.542) + quat_pi,
-                         (3, 3.584) + quat_mpi_2],
-            'marker_1': [(-0.542, 9) + quat_mpi_2,
-                         (3.667, 4) + quat_0],
-            'marker_2': [(6.542, -1) + quat_pi_2,
-                         (2.584, 4) + quat_pi],
-            'marker_3': [(8, 0.458) + quat_pi,
-                         (3, 4.417) + quat_pi_2],
+            'marker_0': (10, 8) + quat_pi,
+            'marker_16': (0, 2) + quat_0,
             
-            'marker_4': (-0.542, -1) + quat_pi_2,
-            'marker_5': (-2, 0.458) + quat_0,
-            'marker_7': (-2, 7.542) + quat_0,
-            'marker_8': (6.542, 9) + quat_mpi_2,
+            'marker_1': (10, 5) + quat_pi,
+            'marker_17': (0, 5) + quat_0,
+            
+            'marker_2': (10, 2) + quat_pi,
+            'marker_18': (0, 8) + quat_0,
+            
+            'marker_3': (8, 0) + quat_pi_2,
+            'marker_19': (2, 10) + quat_mpi_2,
+            
+            'marker_4': (5, 0) + quat_pi_2,
+            'marker_5': (2, 0) + quat_pi_2,
+            
+            'marker_7': (5, 10) + quat_mpi_2,
+            'marker_8': (8, 10) + quat_mpi_2,
         }
+        
+        start_loc = (1, 1)
 
         converted_poses = {}
         for key, value in self.apriltag_world_poses.items():
@@ -276,14 +311,14 @@ class RobotStateEstimator(Node):
                     # If value is a list, process each tuple in the list
                     converted_value = []
                     for item in value:
-                        x, y = item[:2]  # Extract x, y
+                        x, y = item[:2] - np.array(start_loc) 
                         z = 0  # Add z value
                         quaternions = item[2:]  # Extract quaternion values
                         converted_value.append((x * FEET_TO_METERS, y * FEET_TO_METERS, z, *quaternions))
                     converted_poses[key] = converted_value
             else:
                 # If value is a single tuple, process it directly
-                x, y = value[:2]  # Extract x, y
+                x, y = value[:2] - np.array(start_loc) 
                 z = 0  # Add z value
                 quaternions = value[2:]  # Extract quaternion values
                 converted_poses[key] = (x * FEET_TO_METERS, y * FEET_TO_METERS, z, *quaternions)
@@ -351,7 +386,7 @@ class RobotStateEstimator(Node):
                     
                 dists = [np.linalg.norm(state - self.current_state) for state in candidate_states]
                 final_pose = candidate_states[np.argmin(dists)]
-                print(f"tag id: {tag_id} ({np.argmin(dists)}) final pose: {final_pose}")
+                # print(f"tag id: {tag_id} ({np.argmin(dists)}) final pose: {final_pose}")
             else:
                 final_pose = self.compute_candidate_state(
                     self.apriltag_world_poses[tag_id][:3],
@@ -359,7 +394,7 @@ class RobotStateEstimator(Node):
                     rot_apriltag_camera_2d,
                     trans_apriltag_camera_2d,
                 )
-                print(f"tag id: {tag_id} final pose: {final_pose}")
+                # print(f"tag id: {tag_id} final pose: {final_pose}")
         
             valid_tags.append(tag_id)
             estimated_poses.append(final_pose)
@@ -398,25 +433,37 @@ def coord(twist, current_state):
 def main(args=None):
     rclpy.init(args=args)
     robot_state_estimator = RobotStateEstimator()
-    
+    log_file = open("./robot_state_log.txt", "w")
+    start_time = time.time()
+
     # TIME
     waypoint = np.array([[0.0, 0.0, 0.0],
-                     [1.2192, 0.9144, 0.6435],
-                     [1.8288, 2.4384, 1.1903]])
-    
-    # SAFETY
-    waypoint = np.array([[0.0, 0.0, 0.0],
-                     [1.524, 0.6096, 0.38050638],
-                     [1.8288,2.4384, 1.40564765]])
-    
+                         [8.0, 1.0, 0.0],
+                         [0.0, 2.0, 0.0],
+                         [8.0, 3.0, 0.0],
+                         [0.0, 4.0, 0.0],
+                         [8.0, 5.0, 0.0],
+                         [0.0, 6.0, 0.0],
+                         [8.0, 7.0, 0.0],
+                         [0.0, 8.0, 0.0],
+                         [8.0, 9.0, 0.0]])
+
+    feet_to_meters = 0.3048
+
+    waypoint[:, :2] *= feet_to_meters
     # init pid controller
     pid = PIDcontroller(0.065,0,0.05)
 
     current_state = robot_state_estimator.current_state
     patience = 20
     
-    for wp in waypoint:
+    for i, wp in enumerate(waypoint):
         print("move to way point", wp)
+        patience = 5
+        stuck_counter = 0 
+
+        last_state = np.array(current_state)
+        last_velocity = np.array([0.0, 0.0, 0.0])  
         # set wp as the target point
         pid.setTarget(wp)
 
@@ -424,11 +471,16 @@ def main(args=None):
         update_value = pid.update(current_state)
         # publish the twist
         pid.publisher_.publish(genTwistMsg(coord(update_value, current_state)))
+        velocity = coord(update_value, current_state)
+        last_velocity = np.array(velocity)
+        last_state = np.array(current_state)
+        
         #print(coord(update_value, current_state))
         time.sleep(0.05)
         # update the current state
         current_state += update_value
-        robot_state_estimator.get_logger().info(f"Current state: {current_state}")
+        log_file.write(log_state(i, time.time() - start_time, current_state))
+        robot_state_estimator.get_logger().info(f"Current state {i}: {current_state}")
         rclpy.spin_once(robot_state_estimator)
         found_state, estimated_state = robot_state_estimator.pose_updated, robot_state_estimator.current_state
         if found_state: # if the tag is detected, we can use it to update current state.
@@ -446,13 +498,36 @@ def main(args=None):
                 break
             
             update_value = pid.update(current_state)
+            velocity = coord(update_value, current_state)
+            state_diff = np.linalg.norm(pid.getError(current_state, last_state))
+            vel_diff = np.linalg.norm(velocity - last_velocity)
+            if state_diff < 0.007 and vel_diff < 0.001:
+                stuck_counter += 1
+                if stuck_counter >= patience:
+                    velocity *= get_scale_factor(genTwistMsg(velocity))
+                    stuck_counter = -30  # Apply larger velocity for 5 iterations
+                    print("!!! Applying larger velocity to escape stuck state.")
+            elif state_diff < 0.007 and stuck_counter < 0:
+                velocity *= get_scale_factor(genTwistMsg(velocity))
+                if stuck_counter >= -10:
+                    velocity *= 1.7
+                elif stuck_counter >= -20:
+                    velocity *= 1.5
+                stuck_counter += 1
+            else:
+                stuck_counter = 0 
+
+            last_state = np.array(current_state)
+            last_velocity = np.array(velocity)
+            
             # publish the twist
-            pid.publisher_.publish(genTwistMsg(coord(update_value, current_state)))
+            pid.publisher_.publish(genTwistMsg(velocity))
             # print("update to...", coord(update_value, current_state))
             time.sleep(0.05)
             # update the current state
             current_state += update_value
-            robot_state_estimator.get_logger().info(f"Current state: {current_state[0]:.3f}, {current_state[1]:.3f}, {current_state[2]:.3f}")
+            log_file.write(log_state(i, time.time() - start_time, current_state))
+            robot_state_estimator.get_logger().info(f"Current state {i}: {current_state[0]:.3f}, {current_state[1]:.3f}, {current_state[2]:.3f}")
             rclpy.spin_once(robot_state_estimator)
             found_state, estimated_state = robot_state_estimator.pose_updated, robot_state_estimator.current_state
             if found_state: # if the tag is detected, we can use it to update current state.
