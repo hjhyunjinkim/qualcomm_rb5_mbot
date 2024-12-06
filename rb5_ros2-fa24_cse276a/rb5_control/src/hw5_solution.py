@@ -429,6 +429,32 @@ def coord(twist, current_state):
                   [0.0,0.0,1.0]])
     return np.dot(J, twist)
 
+def generate_stair_waypoints_with_obstacles(width, height, obstacles, theta=0.0):
+    x_left = 0.0
+    x_right = width - 2.0
+    y_min = 0.0
+    y_max = height - 1.0 
+
+    waypoints = []
+
+    current_x = x_left
+    current_y = y_min
+    if (current_x, current_y) not in obstacles:
+        waypoints.append([current_x, current_y, theta])
+
+    while current_y < y_max:
+        current_y += 1.0
+        current_x = x_right if current_x == x_left else x_left
+        
+        if (current_x, current_y) in obstacles:
+            # Skip or adjust this waypoint. Here, we'll just skip it.
+            # If we wanted to adjust, we could do something like:
+            #   current_x += 0.5
+            continue
+        
+        waypoints.append([current_x, current_y, theta])
+
+    return np.array(waypoints)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -436,17 +462,19 @@ def main(args=None):
     log_file = open("./robot_state_log.txt", "w")
     start_time = time.time()
 
-    # TIME
-    waypoint = np.array([[0.0, 0.0, 0.0],
-                         [8.0, 1.0, 0.0],
-                         [0.0, 2.0, 0.0],
-                         [8.0, 3.0, 0.0],
-                         [0.0, 4.0, 0.0],
-                         [8.0, 5.0, 0.0],
-                         [0.0, 6.0, 0.0],
-                         [8.0, 7.0, 0.0],
-                         [0.0, 8.0, 0.0],
-                         [8.0, 9.0, 0.0]])
+    obstacles = []
+    waypoint = generate_stair_waypoints_with_obstacles(10.0, 10.0, obstacles)
+
+    # waypoint = np.array([[0.0, 0.0, 0.0],
+    #                      [8.0, 1.0, 0.0],
+    #                      [0.0, 2.0, 0.0],
+    #                      [8.0, 3.0, 0.0],
+    #                      [0.0, 4.0, 0.0],
+    #                      [8.0, 5.0, 0.0],
+    #                      [0.0, 6.0, 0.0],
+    #                      [8.0, 7.0, 0.0],
+    #                      [0.0, 8.0, 0.0],
+    #                      [8.0, 9.0, 0.0]])
 
     feet_to_meters = 0.3048
 
